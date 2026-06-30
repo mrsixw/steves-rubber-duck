@@ -1,5 +1,7 @@
 # Steve's Rubber Duck 🦆🦆🦆
 
+[![Tests workflow status][tests-badge]][tests-workflow]
+
 ![A chaotic cardboard code-review war room staffed by rubber ducks][duck-war-room]
 
 > **Your Cardboard Engineer 📦👷🦆** — a read-only second opinion from a
@@ -109,17 +111,39 @@ RUBBER_DUCK_TIMEOUT_SECONDS
 
 ## Installation 🧰🦆
 
-The canonical personal skill lives at:
+For a first-time installation, create one shared copy of the skill:
 
-```text
-~/.agents/skills/steves-rubber-duck
+```bash
+git clone https://github.com/mrsixw/steves-rubber-duck.git \
+  "$HOME/.agents/skills/steves-rubber-duck"
 ```
 
-Codex, Claude, and Copilot can link to that directory. AGY uses a global
-Markdown link at:
+Point Codex, Claude, and GitHub Copilot at that shared checkout:
 
-```text
-~/.gemini/antigravity-cli/skills/steves-rubber-duck.md
+```bash
+for agent in codex claude copilot; do
+  mkdir -p "$HOME/.$agent/skills"
+  ln -s "$HOME/.agents/skills/steves-rubber-duck" \
+    "$HOME/.$agent/skills/steves-rubber-duck"
+done
+```
+
+AGY (Gemini Antigravity) expects a Markdown skill entry, so link its entry point
+to the same checkout:
+
+```bash
+mkdir -p "$HOME/.gemini/antigravity-cli/skills"
+ln -s "$HOME/.agents/skills/steves-rubber-duck/SKILL.md" \
+  "$HOME/.gemini/antigravity-cli/skills/steves-rubber-duck.md"
+```
+
+This hidden path is intentional: `~/.agents/skills` is the shared, tool-neutral
+home for personal skills, while the links provide compatibility without
+installing four drifting copies. If the skill is already installed, skip the
+bootstrap commands and update every integration with one command:
+
+```bash
+git -C "$HOME/.agents/skills/steves-rubber-duck" pull --ff-only
 ```
 
 ## Development 🧪🦆
@@ -130,6 +154,10 @@ The router uses only the Python standard library.
 python3 -m unittest discover -s tests -v
 python3 scripts/steves_rubber_duck.py --check --format json
 ```
+
+The [Tests workflow][tests-workflow] runs the suite, plus a compile check,
+across the supported Python versions on pull requests and pushes to `main`.
+It can also be started manually. 🦆✅
 
 Licensed under the [MIT License][license].
 
@@ -143,3 +171,5 @@ Licensed under the [MIT License][license].
 [github-rubber-duck]: https://docs.github.com/en/copilot/concepts/agents/copilot-cli/rubber-duck
 [license]: LICENSE
 [plan-review-meme]: assets/plan-review-meme.png
+[tests-badge]: https://github.com/mrsixw/steves-rubber-duck/actions/workflows/tests.yml/badge.svg
+[tests-workflow]: https://github.com/mrsixw/steves-rubber-duck/actions/workflows/tests.yml
