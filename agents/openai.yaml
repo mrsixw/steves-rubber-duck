@@ -1,0 +1,10 @@
+interface:
+  display_name: "Steve's Rubber Duck 🦆"
+  short_description: "Cross-model plan and code critique 🦆"
+  icon_small: "./assets/cardboard-engineer-mascot.png"
+  icon_large: "./assets/cardboard-engineer-mascot.png"
+  brand_color: "#FFD400"
+  default_prompt: "Use $steves-rubber-duck to get an independent duck-powered critique of this plan or change. 🦆"
+
+policy:
+  allow_implicit_invocation: true
