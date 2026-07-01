@@ -737,7 +737,12 @@ def render_failure(attempts: list[Attempt], output_format: str) -> str:
             ensure_ascii=False,
             indent=2,
         )
-    lines = ["🫠🦆 No reviewer route succeeded. Perform an in-session self-critique."]
+    lines = [
+        "🫠🦆 Steve's Rubber Duck — Your Cardboard Engineer 📦👷🦆",
+        "Reviewer: in-session self-critique | Model: caller | Independence: degraded",
+        "",
+        "🫠🦆 No reviewer route succeeded. Perform an in-session self-critique.",
+    ]
     lines.extend(f"- {item.reviewer}: {item.error}" for item in attempts)
     return "\n".join(lines)
 
