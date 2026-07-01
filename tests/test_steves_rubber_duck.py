@@ -244,6 +244,52 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(rendered["reviewer"], "claude")
         self.assertEqual(rendered["review"], "QUACKS GOOD")
 
+    def test_build_agy_command_run_mode(self):
+        candidate = duck.Candidate("agy", "google", "gemini", "medium", "cross-family")
+        with tempfile.TemporaryDirectory() as directory:
+            review_file = Path(directory) / "review-input.md"
+            review_file.write_text("review", encoding="utf-8")
+            
+            help_completed = duck.subprocess.CompletedProcess(["agy", "--help"], 0, "Commands: run", "")
+            run_help_completed = duck.subprocess.CompletedProcess(["agy", "run", "--help"], 0, "--prompt --model --sandbox", "")
+            
+            def fake_run(args, **kwargs):
+                if args == ["agy", "--help"]:
+                    return help_completed
+                if args == ["agy", "run", "--help"]:
+                    return run_help_completed
+                raise ValueError(f"Unexpected run: {args}")
+                
+            with mock.patch.object(duck, "run_process", side_effect=fake_run):
+                cmd = duck.build_agy_command("agy", candidate, review_file, 10)
+                
+            self.assertEqual(cmd, [
+                "agy", "run",
+                "--model", "gemini",
+                "--sandbox=true",
+                "--prompt",
+                "Read review-input.md and return only the requested critique. Do not modify files or invoke other agents."
+            ])
+
+    def test_build_agy_command_print_mode(self):
+        candidate = duck.Candidate("agy", "google", "gemini", "medium", "cross-family")
+        with tempfile.TemporaryDirectory() as directory:
+            review_file = Path(directory) / "review-input.md"
+            review_file.write_text("review content", encoding="utf-8")
+            
+            help_completed = duck.subprocess.CompletedProcess(["agy", "--help"], 0, "Usage of agy:\n  --print  Run a single prompt non-interactively\n  --prompt  Alias for --print\n  --model  Model for current session\n  --sandbox  Run in a sandbox", "")
+            
+            with mock.patch.object(duck, "run_process", return_value=help_completed):
+                cmd = duck.build_agy_command("agy", candidate, review_file, 10)
+                
+            self.assertEqual(cmd, [
+                "agy",
+                "--model", "gemini",
+                "--sandbox",
+                "--print",
+                "review content"
+            ])
+
 
 if __name__ == "__main__":
     unittest.main()
