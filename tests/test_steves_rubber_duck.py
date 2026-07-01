@@ -244,6 +244,21 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(rendered["reviewer"], "claude")
         self.assertEqual(rendered["review"], "QUACKS GOOD")
 
+    def test_render_failure_has_reviewer_header(self):
+        attempts = [duck.Attempt("claude", "anthropic", "timeout after 180s")]
+        rendered = duck.render_failure(attempts, "text")
+        self.assertIn("Reviewer:", rendered)
+        self.assertIn("Independence:", rendered)
+        self.assertIn("🫠🦆", rendered)
+        self.assertIn("claude", rendered)
+
+    def test_render_success_has_reviewer_header(self):
+        result = duck.ReviewResult("agy", "google", "gemini", "medium", "cross-family", "QUACKS GOOD")
+        rendered = duck.render_success(result, [], "text")
+        self.assertIn("Reviewer: agy", rendered)
+        self.assertIn("Model: gemini", rendered)
+        self.assertIn("Independence: cross-family", rendered)
+
     def test_build_agy_command_run_mode(self):
         candidate = duck.Candidate("agy", "google", "gemini", "medium", "cross-family")
         with tempfile.TemporaryDirectory() as directory:
