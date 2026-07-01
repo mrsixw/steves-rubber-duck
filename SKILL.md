@@ -55,6 +55,12 @@ Determine the actual active model family. Copilot and AGY can broker models
 from multiple families, so do not infer their family from the CLI name when the
 active model is known.
 
+Review packets must be piped through non-interactive standard input. Do not
+launch the router in a PTY or feed a packet with `write_stdin` followed by
+control-D; the router rejects interactive input. For automation, prefer
+`--format json` and retain the complete output and process exit code so a
+transport failure cannot be mistaken for a completed review.
+
 Useful controls:
 
 - `--reviewer <tool>` forces one reviewer for diagnostics.

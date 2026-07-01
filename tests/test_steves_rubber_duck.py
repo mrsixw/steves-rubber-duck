@@ -237,6 +237,28 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["providers"][0]["tool"], "claude")
 
+    def test_interactive_stdin_is_rejected(self):
+        stdin = mock.Mock()
+        stdin.isatty.return_value = True
+        stderr = io.StringIO()
+        with mock.patch.object(duck.sys, "stdin", stdin):
+            with redirect_stderr(stderr):
+                code = duck.main(["--caller", "codex", "--kind", "plan"])
+        self.assertEqual(code, 2)
+        self.assertIn("interactive PTY input is unsupported", stderr.getvalue())
+        stdin.read.assert_not_called()
+
+    def test_piped_stdin_still_routes_review(self):
+        stdin = io.StringIO("Review this plan")
+        result = duck.ReviewResult("claude", "anthropic", "sonnet", "medium", "cross-family", "QUACKS GOOD")
+        stdout = io.StringIO()
+        with mock.patch.object(duck.sys, "stdin", stdin):
+            with mock.patch.object(duck, "perform_review", return_value=(result, [])):
+                with redirect_stdout(stdout):
+                    code = duck.main(["--caller", "codex", "--kind", "plan", "--format", "json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["status"], "ok")
+
     def test_json_success_preserves_structured_metadata(self):
         result = duck.ReviewResult("claude", "anthropic", "sonnet", "medium", "cross-family", "QUACKS GOOD")
         rendered = json.loads(duck.render_success(result, [], "json"))

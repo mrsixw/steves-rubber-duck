@@ -70,6 +70,12 @@ printf '%s' "$PLAN" | python3 scripts/steves_rubber_duck.py \
   --tier auto
 ```
 
+Review packets must be piped through non-interactive standard input. Do not
+launch the router in a PTY or send a packet with `write_stdin` followed by
+control-D; interactive input is rejected before the packet is read. For
+automation, use `--format json` and retain the complete output and process exit
+code so transport failures cannot be mistaken for completed reviews.
+
 To review a validated diff with a forced reviewer:
 
 ```bash

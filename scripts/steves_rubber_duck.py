@@ -789,6 +789,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.timeout_seconds <= 0:
         print("error: --timeout-seconds must be positive", file=sys.stderr)
         return 2
+    if sys.stdin.isatty():
+        print(
+            "error: review packet must be piped through non-interactive stdin; "
+            "interactive PTY input is unsupported",
+            file=sys.stderr,
+        )
+        return 2
 
     artifact = sys.stdin.read()
     if not artifact.strip():
