@@ -512,11 +512,17 @@ def build_agy_command(
         return command
 
     if "--print" in top_help and ("--prompt" in top_help or "-p" in top_help):
-        command = [executable, "--print"]
+        # --print <value> consumes the immediately following argument as the prompt.
+        # --model must come BEFORE --print to avoid being swallowed as the prompt.
+        # Embed review content directly rather than referencing a file, since
+        # agy --print has no file-reading tools.
+        review_content = review_file.read_text(encoding="utf-8")
+        command = [executable]
         if candidate.model and "--model" in top_help:
             command.extend(["--model", candidate.model])
-        prompt_flag = "--prompt" if "--prompt" in top_help else "-p"
-        command.extend([prompt_flag, prompt])
+        if "--sandbox" in top_help:
+            command.append("--sandbox")
+        command.extend(["--print", review_content])
         return command
 
     raise RubberDuckError("AGY has no supported non-interactive interface")
