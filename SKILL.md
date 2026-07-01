@@ -72,8 +72,12 @@ complementary model, then a fresh isolated session of the caller's own tool.
 - Adopt non-blocking findings when their benefit is concrete and in scope.
 - Reject speculative or scope-expanding advice with a brief reason.
 - Permit one re-review when a blocking finding causes a material redesign.
-- Summarize the reviewer, key findings, and resulting decisions for the user;
-  do not dump the full critique unless requested.
+- Always report to the user: the reviewer tool, model, and independence level
+  (e.g. "Duck used `agy` (gemini-3.5-flash-high), cross-family."). Pull these
+  from the header line the script emits. Never omit this even if the review is
+  brief or the route degraded to a self-critique.
+- Summarize the key findings and resulting decisions; do not dump the full
+  critique unless requested.
 
 If every route fails, perform an explicit in-session self-critique and disclose
 the degraded review with `🫠🦆` rather than blocking completion.
