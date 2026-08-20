@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "updated": "2026-08-20",
+  "sources": [
+    "https://learn.chatgpt.com/docs/models",
+    "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json",
+    "https://ai.google.dev/gemini-api/docs/models",
+    "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
+    "agy models (v1.1.14, verified 2026-08-20)"
+  ],
+  "effort_preference": {
+    "medium": [
+      "medium",
+      "low"
+    ],
+    "high": [
+      "xhigh",
+      "high",
+      "medium"
+    ]
+  },
+  "tools": {
+    "claude": {
+      "discovery": null,
+      "effort": {
+        "style": "flag",
+        "flag": "--effort"
+      },
+      "families": {
+        "anthropic": {
+          "high": [
+            {
+              "id": "opus",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            {
+              "id": "claude-opus-5",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            }
+          ],
+          "medium": [
+            {
+              "id": "sonnet",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            {
+              "id": "claude-sonnet-5",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "codex": {
+      "discovery": null,
+      "effort": {
+        "style": "config",
+        "key": "model_reasoning_effort"
+      },
+      "families": {
+        "openai": {
+          "high": [
+            {
+              "id": null
+            },
+            {
+              "id": "gpt-5.6-sol",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            {
+              "id": "gpt-5.5",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            }
+          ],
+          "medium": [
+            {
+              "id": null
+            },
+            {
+              "id": "gpt-5.6-terra",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            {
+              "id": "gpt-5.6-luna",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "agy": {
+      "discovery": [
+        "models"
+      ],
+      "effort": null,
+      "families": {
+        "google": {
+          "high": [
+            {
+              "id": "gemini-3.1-pro-high"
+            },
+            {
+              "id": "gemini-3.7-flash-high"
+            },
+            {
+              "id": "gemini-3.5-flash-high"
+            }
+          ],
+          "medium": [
+            {
+              "id": "gemini-3.7-flash-medium"
+            },
+            {
+              "id": "gemini-3.6-flash-medium"
+            },
+            {
+              "id": "gemini-3.5-flash-medium"
+            }
+          ]
+        }
+      }
+    },
+    "copilot": {
+      "discovery": null,
+      "effort": {
+        "style": "flag",
+        "flag": "--effort"
+      },
+      "families": {
+        "anthropic": {
+          "high": [
+            {
+              "id": "claude-opus-5"
+            },
+            {
+              "id": "claude-opus-4.8"
+            },
+            {
+              "id": "claude-opus-4.7"
+            }
+          ],
+          "medium": [
+            {
+              "id": "claude-sonnet-5"
+            },
+            {
+              "id": "claude-sonnet-4.6"
+            },
+            {
+              "id": "claude-sonnet-4.5"
+            }
+          ]
+        },
+        "openai": {
+          "high": [
+            {
+              "id": "gpt-5.6-sol"
+            },
+            {
+              "id": "gpt-5.5"
+            },
+            {
+              "id": "gpt-5.4"
+            }
+          ],
+          "medium": [
+            {
+              "id": "gpt-5.6-terra"
+            },
+            {
+              "id": "gpt-5.6-luna"
+            },
+            {
+              "id": "gpt-5.4-mini"
+            }
+          ]
+        },
+        "google": {
+          "high": [
+            {
+              "id": "gemini-3.1-pro"
+            },
+            {
+              "id": "gemini-3.1-pro-preview"
+            }
+          ],
+          "medium": [
+            {
+              "id": "gemini-3.7-flash"
+            },
+            {
+              "id": "gemini-3.6-flash"
+            },
+            {
+              "id": "gemini-3.5-flash"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
