@@ -6,7 +6,8 @@
     "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json",
     "https://ai.google.dev/gemini-api/docs/models",
     "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
-    "agy models (v1.1.14, verified 2026-08-20)"
+    "agy models (v1.1.14, verified 2026-08-20)",
+    "copilot --model probe (CLI 1.0.80, verified 2026-08-20)"
   ],
   "effort_preference": {
     "medium": [
@@ -185,7 +186,7 @@
               "id": "claude-opus-4.8"
             },
             {
-              "id": "claude-opus-4.7"
+              "id": null
             }
           ],
           "medium": [
@@ -196,7 +197,7 @@
               "id": "claude-sonnet-4.6"
             },
             {
-              "id": "claude-sonnet-4.5"
+              "id": null
             }
           ]
         },
@@ -209,7 +210,7 @@
               "id": "gpt-5.5"
             },
             {
-              "id": "gpt-5.4"
+              "id": null
             }
           ],
           "medium": [
@@ -220,7 +221,7 @@
               "id": "gpt-5.6-luna"
             },
             {
-              "id": "gpt-5.4-mini"
+              "id": null
             }
           ]
         },
@@ -231,6 +232,9 @@
             },
             {
               "id": "gemini-3.1-pro-preview"
+            },
+            {
+              "id": null
             }
           ],
           "medium": [
@@ -241,7 +245,7 @@
               "id": "gemini-3.6-flash"
             },
             {
-              "id": "gemini-3.5-flash"
+              "id": null
             }
           ]
         }
