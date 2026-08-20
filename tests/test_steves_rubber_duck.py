@@ -596,6 +596,85 @@ class RouterTests(unittest.TestCase):
         finally:
             fake.close()
 
+    def test_attempt_names_the_model_that_actually_failed(self):
+        # The log previously named the route's first model for a failure raised
+        # by the last one, which made a dead route impossible to diagnose.
+        fake = FakeCliDirectory(("claude",))
+        try:
+            environment = {
+                "PATH": f"{fake.path}:{os.environ['PATH']}",
+                "FAKE_FAIL_TOOL": "claude",
+            }
+            candidate = duck.Candidate(
+                "claude", "anthropic", "first", "medium", "cross-family",
+                (duck.ModelChoice("first"), duck.ModelChoice("last")),
+            )
+            attempts = []
+            with mock.patch.dict(os.environ, environment):
+                with mock.patch.object(duck, "candidate_routes", return_value=[candidate]):
+                    result, attempts = duck.perform_review(request(), "Review this plan")
+            self.assertIsNone(result)
+            self.assertEqual(attempts[-1].model, "last")
+        finally:
+            fake.close()
+
+    def test_codex_reports_the_effort_it_actually_sent(self):
+        # Codex falls back to the tier when the catalog declares no levels; the
+        # header must show what was sent, not the empty catalog value.
+        fake = FakeCliDirectory(("codex",))
+        try:
+            candidate = duck.Candidate(
+                "codex", "openai", None, "high", "cross-family", (duck.ModelChoice(None, None),)
+            )
+            with mock.patch.dict(os.environ, {"PATH": f"{fake.path}:{os.environ['PATH']}"}):
+                result = duck.execute_candidate(
+                    candidate, kind="plan", artifact="Review this plan", timeout_seconds=10
+                )
+            self.assertEqual(result.effort, "high")
+        finally:
+            fake.close()
+
+    def test_broker_default_model_does_not_claim_cross_family(self):
+        # Copilot choosing its own model may serve any family, so the header must
+        # not assert an independence level that cannot be substantiated.
+        fake = FakeCliDirectory(("copilot",))
+        try:
+            candidate = duck.Candidate(
+                "copilot", "openai", None, "medium", "cross-family", (duck.ModelChoice(None),)
+            )
+            with mock.patch.dict(os.environ, {"PATH": f"{fake.path}:{os.environ['PATH']}"}):
+                result = duck.execute_candidate(
+                    candidate, kind="plan", artifact="Review this plan", timeout_seconds=10
+                )
+            self.assertEqual(result.independence, "fresh-session")
+            self.assertEqual(result.family, "unknown")
+        finally:
+            fake.close()
+
+    def test_broker_named_model_keeps_its_family(self):
+        fake = FakeCliDirectory(("copilot",))
+        try:
+            candidate = duck.Candidate(
+                "copilot", "openai", "gpt-5.6-sol", "medium", "cross-family",
+                (duck.ModelChoice("gpt-5.6-sol"),),
+            )
+            with mock.patch.dict(os.environ, {"PATH": f"{fake.path}:{os.environ['PATH']}"}):
+                result = duck.execute_candidate(
+                    candidate, kind="plan", artifact="Review this plan", timeout_seconds=10
+                )
+            self.assertEqual(result.independence, "cross-family")
+            self.assertEqual(result.family, "openai")
+        finally:
+            fake.close()
+
+    def test_copilot_route_ends_with_the_cli_default(self):
+        # Some Copilot plans reject every named model, so each tier must end with
+        # the CLI's own auto-selection or the whole route is unusable.
+        for family in ("anthropic", "openai", "google"):
+            for tier in ("medium", "high"):
+                choices = duck.configured_models("copilot", family, tier)
+                self.assertIsNone(choices[-1].model, f"{family}/{tier}")
+
     def test_list_models_json_is_machine_readable(self):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
@@ -640,9 +719,11 @@ class RouterTests(unittest.TestCase):
         # subcommand; that would abandon the print mode that actually works.
         self.assertFalse(duck.advertises_subcommand("  run a single prompt\n", "run"))
 
-    def test_copilot_keeps_tier_effort_when_catalog_declares_none(self):
-        # Copilot's supported effort levels are undocumented, so the catalog lists
-        # none. The tier must still be passed, as it was before the catalog existed.
+    def test_copilot_sends_no_effort_when_the_catalog_declares_none(self):
+        # Verified against Copilot CLI 1.0.80: passing --effort to a model that
+        # does not support it fails the call outright with
+        # 'Model "auto" does not support reasoning effort configuration'.
+        # Falling back to the tier here would break the entire Copilot route.
         fake = FakeCliDirectory(("copilot",))
         try:
             recorded = {}
@@ -661,8 +742,30 @@ class RouterTests(unittest.TestCase):
                     duck.execute_candidate(
                         candidate, kind="plan", artifact="Review this plan", timeout_seconds=10
                     )
+            self.assertNotIn("--effort", recorded["command"])
+        finally:
+            fake.close()
+
+    def test_copilot_sends_an_effort_the_catalog_vouches_for(self):
+        fake = FakeCliDirectory(("copilot",))
+        try:
+            recorded = {}
+            real_run = duck.run_process
+
+            def capture(command, **kwargs):
+                recorded.setdefault("command", command)
+                return real_run(command, **kwargs)
+
+            candidate = duck.Candidate(
+                "copilot", "anthropic", "claude-opus-5", "high", "cross-family",
+                (duck.ModelChoice("claude-opus-5", "high"),),
+            )
+            with mock.patch.dict(os.environ, {"PATH": f"{fake.path}:{os.environ['PATH']}"}):
+                with mock.patch.object(duck, "run_process", side_effect=capture):
+                    duck.execute_candidate(
+                        candidate, kind="plan", artifact="Review this plan", timeout_seconds=10
+                    )
             command = recorded["command"]
-            self.assertIn("--effort", command)
             self.assertEqual(command[command.index("--effort") + 1], "high")
         finally:
             fake.close()

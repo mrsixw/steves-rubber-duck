@@ -28,6 +28,9 @@ from pathlib import Path
 
 
 TOOLS = ("claude", "codex", "copilot", "agy")
+# Tools that serve models from several families, so the active family cannot be
+# inferred from the CLI name alone.
+BROKER_TOOLS = ("copilot",)
 FAMILIES = ("anthropic", "openai", "google", "unknown")
 DIRECT_TOOL_FAMILY = {
     "claude": "anthropic",
@@ -904,6 +907,7 @@ def run_candidate_model(
         workdir = Path(directory)
         review_file = workdir / "review-input.md"
         input_text: str | None = None
+        effort = model.effort
 
         if candidate.tool == "claude":
             command = [
@@ -923,6 +927,7 @@ def run_candidate_model(
             command.extend(effort_args("claude", model.effort))
             input_text = prompt
         elif candidate.tool == "codex":
+            effort = model.effort or candidate.tier
             command = [
                 executable,
                 "exec",
@@ -935,12 +940,17 @@ def run_candidate_model(
                 "-C",
                 str(workdir),
             ]
-            command.extend(effort_args("codex", model.effort or candidate.tier))
+            command.extend(effort_args("codex", effort))
             if model.model:
                 command.extend(["-m", model.model])
             command.append("-")
             input_text = prompt
         elif candidate.tool == "copilot":
+            # Only send an effort the catalog vouches for. Copilot rejects the
+            # flag outright on models that do not support it, including the
+            # "auto" selection some plans are limited to, so a tier fallback
+            # here fails the whole route.
+            effort = model.effort
             command = [
                 executable,
                 "--agent",
@@ -962,7 +972,7 @@ def run_candidate_model(
                 "--output-format",
                 "text",
             ]
-            command.extend(effort_args("copilot", model.effort or candidate.tier))
+            command.extend(effort_args("copilot", effort))
             if model.model:
                 command.extend(["--model", model.model])
         elif candidate.tool == "agy":
@@ -988,14 +998,19 @@ def run_candidate_model(
             raise RubberDuckError(f"{candidate.tool} exited {result.returncode}: {detail}")
         if not output:
             raise RubberDuckError(f"{candidate.tool} returned an empty critique")
+        family, independence = candidate.family, candidate.independence
+        if candidate.tool in BROKER_TOOLS and model.model is None:
+            # A broker left to pick its own model may serve any family, so the
+            # cross-family claim in the header cannot be substantiated.
+            family, independence = "unknown", "fresh-session"
         return ReviewResult(
             reviewer=candidate.tool,
-            family=candidate.family,
+            family=family,
             model=model.model,
             tier=candidate.tier,
-            independence=candidate.independence,
+            independence=independence,
             review=output,
-            effort=model.effort,
+            effort=effort,
         )
 
 
@@ -1031,7 +1046,10 @@ def perform_review(request: ReviewRequest, artifact: str) -> tuple[ReviewResult 
                 attempts,
             )
         except (RubberDuckError, subprocess.SubprocessError, OSError) as exc:
-            attempts.append(Attempt(candidate.tool, candidate.model, sanitize_error(str(exc))))
+            # Name the model that actually failed, which is the last one tried,
+            # not the first one the route was built with.
+            failed = candidate.models[-1].model if candidate.models else candidate.model
+            attempts.append(Attempt(candidate.tool, failed, sanitize_error(str(exc))))
     return None, attempts
 
 
