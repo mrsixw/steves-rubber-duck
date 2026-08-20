@@ -61,6 +61,8 @@ Useful controls:
 - `--format json` provides structured metadata for automation.
 - `--check --format json` reports installed and authenticated routes without a
   model call.
+- `--list-models` reports which models each installed CLI will actually be
+  offered, after runtime discovery.
 
 The router prefers a different model family, then Copilot with an explicitly
 complementary model, then a fresh isolated session of the caller's own tool.
@@ -72,10 +74,11 @@ complementary model, then a fresh isolated session of the caller's own tool.
 - Adopt non-blocking findings when their benefit is concrete and in scope.
 - Reject speculative or scope-expanding advice with a brief reason.
 - Permit one re-review when a blocking finding causes a material redesign.
-- Always report to the user: the reviewer tool, model, and independence level
-  (e.g. "Duck used `agy` (gemini-3.5-flash-high), cross-family."). Pull these
-  from the header line the script emits. Never omit this even if the review is
-  brief or the route degraded to a self-critique.
+- Always report to the user: the reviewer tool, model, effort, and independence
+  level (e.g. "Duck used `agy` (<model>, effort <level>), cross-family."). Pull
+  these verbatim from the header line the script emits rather than recalling a
+  model name. Never omit this even if the review is brief or the route degraded
+  to a self-critique.
 - Summarize the key findings and resulting decisions; do not dump the full
   critique unless requested.
 

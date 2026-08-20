@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import functools
 import json
 import os
 import re
@@ -20,11 +21,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
+from datetime import date
 from pathlib import Path
 
 
 TOOLS = ("claude", "codex", "copilot", "agy")
+# Tools that serve models from several families, so the active family cannot be
+# inferred from the CLI name alone.
+BROKER_TOOLS = ("copilot",)
 FAMILIES = ("anthropic", "openai", "google", "unknown")
 DIRECT_TOOL_FAMILY = {
     "claude": "anthropic",
@@ -57,6 +63,56 @@ HIGH_RISK_RE = re.compile(
 )
 MAX_INPUT_BYTES = 500_000
 DEFAULT_TIMEOUT_SECONDS = 180
+MAX_MODELS_PER_ROUTE = 3
+CATALOG_STALE_DAYS = 90
+DISCOVERY_TTL_SECONDS = 24 * 60 * 60
+SUPPORTED_SCHEMA_VERSION = 1
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CATALOG_PATH = REPO_ROOT / "data" / "models.json"
+VERSION_PATH = REPO_ROOT / "VERSION"
+MODEL_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]+")
+MODEL_ERROR_RE = re.compile(
+    r"unknown model|invalid model|unsupported model|unrecognized model|"
+    r"model .{0,40}?not (?:found|available|supported)|no longer available|"
+    r"not available on your plan|is deprecated|has been retired",
+    re.IGNORECASE,
+)
+# Fallback catalog used only when data/models.json is missing or unreadable, so a
+# damaged checkout still routes instead of failing outright. Deliberately minimal:
+# it prefers each CLI's own self-refreshing default or alias.
+_BUILTIN_CATALOG = {
+    "schema_version": SUPPORTED_SCHEMA_VERSION,
+    "updated": "2026-08-20",
+    "effort_preference": {"medium": ["medium", "low"], "high": ["xhigh", "high", "medium"]},
+    "tools": {
+        "claude": {
+            "discovery": None,
+            "effort": {"style": "flag", "flag": "--effort"},
+            "families": {
+                "anthropic": {
+                    "high": [{"id": "opus", "efforts": ["low", "medium", "high", "xhigh", "max"]}],
+                    "medium": [{"id": "sonnet", "efforts": ["low", "medium", "high", "xhigh", "max"]}],
+                },
+            },
+        },
+        "codex": {
+            "discovery": None,
+            "effort": {"style": "config", "key": "model_reasoning_effort"},
+            "families": {"openai": {"high": [{"id": None}], "medium": [{"id": None}]}},
+        },
+        "agy": {
+            "discovery": ["models"],
+            "effort": None,
+            "families": {
+                "google": {
+                    "high": [{"id": "gemini-3.1-pro-high"}],
+                    "medium": [{"id": "gemini-3.5-flash-medium"}],
+                },
+            },
+        },
+        "copilot": {"discovery": None, "effort": None, "families": {}},
+    },
+}
 
 
 class RubberDuckError(RuntimeError):
@@ -64,14 +120,30 @@ class RubberDuckError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ModelChoice:
+    """Pair a model identifier with the reasoning effort it supports.
+
+    A ``model`` of ``None`` means "omit the model flag and let the CLI pick its
+    own default", which keeps self-refreshing CLIs such as Codex current without
+    any catalog maintenance. An ``effort`` of ``None`` means the model exposes no
+    effort control, so no effort argument is passed at all.
+    """
+
+    model: str | None
+    effort: str | None = None
+
+
+@dataclass(frozen=True)
 class Candidate:
-    """Describe one concrete reviewer route."""
+    """Describe one concrete reviewer route and its ordered model fallbacks."""
 
     tool: str
     family: str
     model: str | None
     tier: str
     independence: str
+    models: tuple[ModelChoice, ...] = ()
+    effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +165,7 @@ class ReviewResult:
     tier: str
     independence: str
     review: str
+    effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,8 +180,77 @@ class ReviewRequest:
     timeout_seconds: int
 
 
-def configured_model(tool: str, family: str, tier: str) -> str | None:
-    """Return a configurable capable model for a reviewer route.
+def skill_version() -> str:
+    """Return the installed skill version.
+
+    Returns:
+        Version string from the VERSION file, or ``"unknown"`` when the file is
+        absent or unreadable, as it is in a partial or vendored checkout.
+    """
+
+    try:
+        return VERSION_PATH.read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def load_catalog() -> dict:
+    """Load the model catalog, falling back to the builtin when it is unusable.
+
+    Returns:
+        Catalog mapping. Never raises: a missing, unreadable, malformed, or
+        future-versioned file degrades to ``_BUILTIN_CATALOG`` so the router
+        still routes.
+    """
+
+    path = Path(os.environ.get("RUBBER_DUCK_MODELS_FILE", CATALOG_PATH))
+    try:
+        catalog = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _BUILTIN_CATALOG
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("tools"), dict):
+        return _BUILTIN_CATALOG
+    if catalog.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
+        return _BUILTIN_CATALOG
+    return catalog
+
+
+def catalog_age_days(catalog: dict) -> int | None:
+    """Return the catalog's age in days, or ``None`` when it has no valid date."""
+
+    try:
+        return (date.today() - date.fromisoformat(catalog["updated"])).days
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def resolve_effort(entry: dict, tier: str, catalog: dict) -> str | None:
+    """Pick the best reasoning effort a model actually supports for a tier.
+
+    Args:
+        entry: Catalog model entry.
+        tier: Resolved capability tier.
+        catalog: Loaded catalog, for its effort preference order.
+
+    Returns:
+        Effort level, or ``None`` when the model declares no effort control.
+    """
+
+    supported = entry.get("efforts") or ()
+    if not supported:
+        return None
+    preference = catalog.get("effort_preference", {}).get(tier) or ()
+    for level in preference:
+        if level in supported:
+            return level
+    return None
+
+
+def configured_models(tool: str, family: str, tier: str) -> tuple[ModelChoice, ...]:
+    """Return ordered model choices for a reviewer route, newest first.
+
+    Environment overrides win outright and collapse the route to one choice, so
+    an operator can always pin an exact model without editing the catalog.
 
     Args:
         tool: Reviewer CLI name.
@@ -116,32 +258,172 @@ def configured_model(tool: str, family: str, tier: str) -> str | None:
         tier: Resolved capability tier.
 
     Returns:
-        Model alias or identifier, or ``None`` to use the CLI's capable default.
+        Model choices in preference order, capped at ``MAX_MODELS_PER_ROUTE``.
+        An entry whose ``model`` is ``None`` means "use the CLI's own default".
     """
 
-    key = f"RUBBER_DUCK_{tool.upper()}_{family.upper()}_{tier.upper()}_MODEL"
-    if key in os.environ:
-        return os.environ[key]
+    prefix = f"RUBBER_DUCK_{tool.upper()}_{family.upper()}_{tier.upper()}"
+    override = os.environ.get(f"{prefix}_MODEL")
+    if override is None and tool == "codex":
+        override = os.environ.get("RUBBER_DUCK_CODEX_MODEL")
+    if override is not None:
+        return (ModelChoice(override or None, os.environ.get(f"{prefix}_EFFORT")),)
 
-    if tool == "claude":
-        return "opus" if tier == "high" else "sonnet"
-    if tool == "codex":
-        return os.environ.get("RUBBER_DUCK_CODEX_MODEL")
-    if tool == "agy":
-        if family != "google":
+    catalog = load_catalog()
+    entries = (
+        catalog["tools"]
+        .get(tool, {})
+        .get("families", {})
+        .get(family, {})
+        .get(tier, [])
+    )
+    effort_override = os.environ.get(f"{prefix}_EFFORT")
+    choices = []
+    for entry in entries[:MAX_MODELS_PER_ROUTE]:
+        if not isinstance(entry, dict):
+            continue
+        effort = effort_override or resolve_effort(entry, tier, catalog)
+        choices.append(ModelChoice(entry.get("id"), effort))
+    return tuple(choices)
+
+
+def effort_args(tool: str, effort: str | None, help_text: str = "") -> list[str]:
+    """Render a reasoning effort into CLI arguments for one tool.
+
+    Args:
+        tool: Reviewer CLI name.
+        effort: Resolved effort level, or ``None``.
+        help_text: Probed help output, used when the tool needs flag discovery.
+
+    Returns:
+        Arguments to append, empty when the tool or model has no effort control.
+    """
+
+    if not effort:
+        return []
+    config = load_catalog()["tools"].get(tool, {}).get("effort")
+    if not config:
+        return []
+    style = config.get("style")
+    if style == "config":
+        return ["-c", f'{config["key"]}="{effort}"']
+    if style == "flag":
+        flag = config["flag"]
+        if config.get("probe_help") and flag not in help_text:
+            return []
+        return [flag, effort]
+    return []
+
+
+def discovery_cache_path() -> Path:
+    """Return the on-disk discovery cache location."""
+
+    root = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
+    return Path(root) / "steves-rubber-duck" / "discovery.json"
+
+
+def read_discovery_cache(tool: str) -> list[str] | None:
+    """Return cached discovered models for a tool while the entry is fresh."""
+
+    try:
+        cache = json.loads(discovery_cache_path().read_text(encoding="utf-8"))
+        entry = cache[tool]
+        if time.time() - entry["fetched_at"] > DISCOVERY_TTL_SECONDS:
             return None
-        return "gemini-3.1-pro-high" if tier == "high" else "gemini-3.5-flash-high"
-    if tool == "copilot":
-        models = {
-            ("anthropic", "medium"): "claude-sonnet-4.6",
-            ("anthropic", "high"): "claude-opus-4.7",
-            ("openai", "medium"): "gpt-5.3-codex",
-            ("openai", "high"): "gpt-5.4",
-            ("google", "medium"): "gemini-3.5-flash",
-            ("google", "high"): "gemini-3.1-pro-preview",
-        }
-        return models.get((family, tier))
-    return None
+        return [str(model) for model in entry["models"]]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def write_discovery_cache(tool: str, models: list[str]) -> None:
+    """Persist discovered models atomically, ignoring any cache write failure."""
+
+    path = discovery_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            cache = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(cache, dict):
+                cache = {}
+        except (OSError, json.JSONDecodeError):
+            cache = {}
+        cache[tool] = {"fetched_at": time.time(), "models": models}
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, delete=False
+        ) as handle:
+            json.dump(cache, handle)
+            temporary = Path(handle.name)
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+def discover_models(tool: str, executable: str, timeout_seconds: int) -> list[str]:
+    """List the models a CLI reports as available.
+
+    Parsing is deliberately loose: every whitespace-separated token on every
+    output line is a candidate, because the exact listing format is not a
+    documented contract. Callers intersect the result with the catalog, so
+    unrelated tokens such as banner text cannot introduce a bogus model.
+
+    Args:
+        tool: Reviewer CLI name.
+        executable: Resolved executable path.
+        timeout_seconds: Overall timeout used to bound the probe.
+
+    Returns:
+        Discovered model tokens, empty when the tool cannot or will not report.
+    """
+
+    command = load_catalog()["tools"].get(tool, {}).get("discovery")
+    if not command or os.environ.get("RUBBER_DUCK_NO_DISCOVERY") == "1":
+        return []
+    cached = read_discovery_cache(tool)
+    if cached is not None:
+        return cached
+    try:
+        result = run_process(
+            [executable, *command],
+            cwd=Path(tempfile.gettempdir()),
+            timeout_seconds=min(timeout_seconds, 15),
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    models = MODEL_TOKEN_RE.findall(result.stdout)
+    write_discovery_cache(tool, models)
+    return models
+
+
+def available_models(
+    tool: str,
+    choices: tuple[ModelChoice, ...],
+    executable: str,
+    timeout_seconds: int,
+) -> tuple[ModelChoice, ...]:
+    """Filter catalog choices down to what the CLI reports it can actually run.
+
+    Args:
+        tool: Reviewer CLI name.
+        choices: Catalog-ordered model choices.
+        executable: Resolved executable path.
+        timeout_seconds: Overall timeout used to bound the probe.
+
+    Returns:
+        Choices in catalog order. The input is returned unchanged when the tool
+        supports no discovery, discovery fails, or discovery matches nothing --
+        an unhelpful probe must never leave a route with no models to try.
+    """
+
+    discovered = set(discover_models(tool, executable, timeout_seconds))
+    if not discovered:
+        return choices
+    filtered = tuple(
+        choice for choice in choices if choice.model is None or choice.model in discovered
+    )
+    return filtered or choices
 
 
 def resolve_tier(requested: str, kind: str, artifact: str) -> str:
@@ -179,38 +461,41 @@ def candidate_routes(request: ReviewRequest, artifact: str) -> list[Candidate]:
     caller_family = request.caller_family
     complementary = COMPLEMENTARY_FAMILIES[caller_family]
 
+    def route(tool: str, family: str, independence: str) -> Candidate:
+        """Build one candidate with its ordered model fallbacks resolved."""
+
+        models = configured_models(tool, family, tier)
+        first = models[0] if models else ModelChoice(None, None)
+        return Candidate(
+            tool=tool,
+            family=family,
+            model=first.model,
+            tier=tier,
+            independence=independence,
+            models=models or (first,),
+            effort=first.effort,
+        )
+
     if request.reviewer != "auto":
         if request.reviewer == "copilot":
             family = complementary[0] if complementary else "unknown"
         else:
             family = DIRECT_TOOL_FAMILY.get(request.reviewer, caller_family)
         independence = "cross-family" if family != caller_family and caller_family != "unknown" else "fresh-session"
-        return [
-            Candidate(
-                tool=request.reviewer,
-                family=family,
-                model=configured_model(request.reviewer, family, tier),
-                tier=tier,
-                independence=independence,
-            ),
-        ]
+        return [route(request.reviewer, family, independence)]
 
     candidates: list[Candidate] = []
     for family in complementary:
         tool = DIRECT_TOOL_BY_FAMILY[family]
         if tool == request.caller and family == caller_family:
             continue
-        candidates.append(
-            Candidate(tool, family, configured_model(tool, family, tier), tier, "cross-family"),
-        )
+        candidates.append(route(tool, family, "cross-family"))
 
     broker_family = complementary[0]
     candidates.append(
-        Candidate(
+        route(
             "copilot",
             broker_family,
-            configured_model("copilot", broker_family, tier),
-            tier,
             "cross-family" if caller_family != "unknown" else "fresh-session",
         ),
     )
@@ -218,20 +503,12 @@ def candidate_routes(request: ReviewRequest, artifact: str) -> list[Candidate]:
     self_family = caller_family
     if self_family == "unknown":
         self_family = CALLER_DEFAULT_FAMILY[request.caller]
-    candidates.append(
-        Candidate(
-            request.caller,
-            self_family,
-            configured_model(request.caller, self_family, tier),
-            tier,
-            "fresh-session",
-        ),
-    )
+    candidates.append(route(request.caller, self_family, "fresh-session"))
 
     unique: list[Candidate] = []
-    seen: set[tuple[str, str | None]] = set()
+    seen: set[tuple[str, tuple[ModelChoice, ...]]] = set()
     for candidate in candidates:
-        key = (candidate.tool, candidate.model)
+        key = (candidate.tool, candidate.models)
         if key not in seen:
             seen.add(key)
             unique.append(candidate)
@@ -467,14 +744,19 @@ def preflight(candidate: Candidate, executable: str, timeout_seconds: int) -> No
 def build_agy_command(
     executable: str,
     candidate: Candidate,
+    model: ModelChoice,
     review_file: Path,
     timeout_seconds: int,
 ) -> list[str]:
     """Build a command for an installed AGY headless interface.
 
+    AGY encodes reasoning effort in the model identifier itself, for example
+    ``gemini-3.1-pro-high``, so no separate effort argument is added here.
+
     Args:
         executable: Resolved AGY path.
         candidate: AGY reviewer candidate.
+        model: Model choice being attempted.
         review_file: File containing the complete review prompt.
         timeout_seconds: Bound for help probes.
 
@@ -494,7 +776,7 @@ def build_agy_command(
     top_help = f"{top.stdout}\n{top.stderr}"
     prompt = "Read review-input.md and return only the requested critique. Do not modify files or invoke other agents."
 
-    if re.search(r"(^|\s)run(\s|$)", top_help):
+    if advertises_subcommand(top_help, "run"):
         run_help_result = run_process(
             [executable, "run", "--help"],
             cwd=review_file.parent,
@@ -504,8 +786,9 @@ def build_agy_command(
         if "--prompt" not in run_help:
             raise RubberDuckError("AGY run does not advertise --prompt")
         command = [executable, "run"]
-        if candidate.model and "--model" in run_help:
-            command.extend(["--model", candidate.model])
+        if model.model and "--model" in run_help:
+            command.extend(["--model", model.model])
+        command.extend(effort_args("agy", model.effort, run_help))
         if "--sandbox" in run_help:
             command.append("--sandbox=true")
         command.extend(["--prompt", prompt])
@@ -518,8 +801,9 @@ def build_agy_command(
         # agy --print has no file-reading tools.
         review_content = review_file.read_text(encoding="utf-8")
         command = [executable]
-        if candidate.model and "--model" in top_help:
-            command.extend(["--model", candidate.model])
+        if model.model and "--model" in top_help:
+            command.extend(["--model", model.model])
+        command.extend(effort_args("agy", model.effort, top_help))
         if "--sandbox" in top_help:
             command.append("--sandbox")
         command.extend(["--print", review_content])
@@ -528,26 +812,57 @@ def build_agy_command(
     raise RubberDuckError("AGY has no supported non-interactive interface")
 
 
+def advertises_subcommand(help_text: str, name: str) -> bool:
+    """Report whether help output lists a subcommand, not merely the word.
+
+    Only the trailing subcommand listing is searched. Scanning the whole help
+    text matches prose such as "Run a single prompt", which would send the
+    router down a command path the CLI does not actually support.
+
+    Args:
+        help_text: Combined stdout and stderr from a help probe.
+        name: Subcommand to look for.
+
+    Returns:
+        ``True`` when the subcommand appears in a subcommand listing.
+    """
+
+    match = re.search(r"^.*subcommands?:\s*$", help_text, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        return False
+    section = help_text[match.end():]
+    return re.search(rf"^\s+{re.escape(name)}\s+\S", section, re.MULTILINE) is not None
+
+
 def execute_candidate(
     candidate: Candidate,
     *,
     kind: str,
     artifact: str,
     timeout_seconds: int,
+    attempts: list[Attempt] | None = None,
 ) -> ReviewResult:
-    """Execute one reviewer candidate in an isolated temporary directory.
+    """Execute one reviewer route, walking its model fallbacks in order.
+
+    The tool is resolved and authenticated once, then each model is tried until
+    one produces a critique. Only a model-specific rejection advances to the
+    next model; an authentication, timeout, or transport failure abandons the
+    tool immediately so the router moves on rather than repeating a failure that
+    a different model cannot fix.
 
     Args:
         candidate: Candidate reviewer route.
         kind: Review kind.
         artifact: Review packet.
         timeout_seconds: Model-call timeout.
+        attempts: Optional sink recording each rejected model.
 
     Returns:
         Successful review result.
 
     Raises:
-        RubberDuckError: If the tool is unavailable, unauthenticated, or fails.
+        RubberDuckError: If the tool is unavailable, unauthenticated, or every
+            model is rejected.
     """
 
     executable = shutil.which(candidate.tool)
@@ -555,11 +870,60 @@ def execute_candidate(
         raise RubberDuckError(f"{candidate.tool} is not installed")
     preflight(candidate, executable, timeout_seconds)
     prompt = build_review_prompt(kind, artifact)
+    models = available_models(
+        candidate.tool, candidate.models or (ModelChoice(candidate.model),), executable, timeout_seconds
+    )
+
+    if not models:
+        raise RubberDuckError(f"{candidate.tool} has no configured model")
+    for index, model in enumerate(models):
+        try:
+            return run_candidate_model(
+                candidate,
+                model,
+                executable=executable,
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+            )
+        except RubberDuckError as exc:
+            # The final rejection is raised rather than recorded, so the caller
+            # logs it once instead of the route appearing twice in the attempts.
+            if index == len(models) - 1 or not MODEL_ERROR_RE.search(str(exc)):
+                raise
+            if attempts is not None:
+                attempts.append(Attempt(candidate.tool, model.model, sanitize_error(str(exc))))
+    raise RubberDuckError(f"{candidate.tool} exhausted every configured model")
+
+
+def run_candidate_model(
+    candidate: Candidate,
+    model: ModelChoice,
+    *,
+    executable: str,
+    prompt: str,
+    timeout_seconds: int,
+) -> ReviewResult:
+    """Run one reviewer with one model in an isolated temporary directory.
+
+    Args:
+        candidate: Candidate reviewer route.
+        model: Model choice to attempt.
+        executable: Resolved executable path.
+        prompt: Complete reviewer prompt.
+        timeout_seconds: Model-call timeout.
+
+    Returns:
+        Successful review result.
+
+    Raises:
+        RubberDuckError: If the reviewer is unsupported, times out, or fails.
+    """
 
     with tempfile.TemporaryDirectory(prefix="steves-rubber-duck-") as directory:
         workdir = Path(directory)
         review_file = workdir / "review-input.md"
         input_text: str | None = None
+        effort = model.effort
 
         if candidate.tool == "claude":
             command = [
@@ -574,10 +938,12 @@ def execute_candidate(
                 "--output-format",
                 "text",
             ]
-            if candidate.model:
-                command.extend(["--model", candidate.model])
+            if model.model:
+                command.extend(["--model", model.model])
+            command.extend(effort_args("claude", model.effort))
             input_text = prompt
         elif candidate.tool == "codex":
+            effort = model.effort or candidate.tier
             command = [
                 executable,
                 "exec",
@@ -589,14 +955,18 @@ def execute_candidate(
                 "--skip-git-repo-check",
                 "-C",
                 str(workdir),
-                "-c",
-                f'model_reasoning_effort="{candidate.tier}"',
             ]
-            if candidate.model:
-                command.extend(["-m", candidate.model])
+            command.extend(effort_args("codex", effort))
+            if model.model:
+                command.extend(["-m", model.model])
             command.append("-")
             input_text = prompt
         elif candidate.tool == "copilot":
+            # Only send an effort the catalog vouches for. Copilot rejects the
+            # flag outright on models that do not support it, including the
+            # "auto" selection some plans are limited to, so a tier fallback
+            # here fails the whole route.
+            effort = model.effort
             command = [
                 executable,
                 "--agent",
@@ -610,8 +980,6 @@ def execute_candidate(
                 # Non-interactive Copilot requires permission for its available
                 # tools; the empty available set leaves nothing to authorize.
                 "--allow-all-tools",
-                "--effort",
-                candidate.tier,
                 "--no-ask-user",
                 "--no-auto-update",
                 "--no-remote",
@@ -620,12 +988,13 @@ def execute_candidate(
                 "--output-format",
                 "text",
             ]
-            if candidate.model:
-                command.extend(["--model", candidate.model])
+            command.extend(effort_args("copilot", effort))
+            if model.model:
+                command.extend(["--model", model.model])
         elif candidate.tool == "agy":
             review_file.write_text(prompt, encoding="utf-8")
             review_file.chmod(0o600)
-            command = build_agy_command(executable, candidate, review_file, timeout_seconds)
+            command = build_agy_command(executable, candidate, model, review_file, timeout_seconds)
         else:
             raise RubberDuckError(f"Unsupported reviewer: {candidate.tool}")
 
@@ -645,13 +1014,19 @@ def execute_candidate(
             raise RubberDuckError(f"{candidate.tool} exited {result.returncode}: {detail}")
         if not output:
             raise RubberDuckError(f"{candidate.tool} returned an empty critique")
+        family, independence = candidate.family, candidate.independence
+        if candidate.tool in BROKER_TOOLS and model.model is None:
+            # A broker left to pick its own model may serve any family, so the
+            # cross-family claim in the header cannot be substantiated.
+            family, independence = "unknown", "fresh-session"
         return ReviewResult(
             reviewer=candidate.tool,
-            family=candidate.family,
-            model=candidate.model,
+            family=family,
+            model=model.model,
             tier=candidate.tier,
-            independence=candidate.independence,
+            independence=independence,
             review=output,
+            effort=effort,
         )
 
 
@@ -682,32 +1057,109 @@ def perform_review(request: ReviewRequest, artifact: str) -> tuple[ReviewResult 
                     kind=request.kind,
                     artifact=artifact,
                     timeout_seconds=request.timeout_seconds,
+                    attempts=attempts,
                 ),
                 attempts,
             )
         except (RubberDuckError, subprocess.SubprocessError, OSError) as exc:
-            attempts.append(Attempt(candidate.tool, candidate.model, sanitize_error(str(exc))))
+            # Name the model that actually failed, which is the last one tried,
+            # not the first one the route was built with.
+            failed = candidate.models[-1].model if candidate.models else candidate.model
+            attempts.append(Attempt(candidate.tool, failed, sanitize_error(str(exc))))
     return None, attempts
 
 
-def probe_tools(timeout_seconds: int) -> list[dict[str, str | bool]]:
-    """Inspect installed tools and stable authentication signals without model calls."""
+def probe_tools(timeout_seconds: int) -> list[dict[str, object]]:
+    """Inspect installed tools, auth signals, and resolved models without model calls."""
 
-    probes: list[dict[str, str | bool]] = []
+    probes: list[dict[str, object]] = []
     for tool in TOOLS:
         executable = shutil.which(tool)
         if not executable:
-            probes.append({"tool": tool, "installed": False, "status": "not installed"})
+            probes.append({"tool": tool, "installed": False, "status": "not installed", "models": []})
             continue
         family = DIRECT_TOOL_FAMILY.get(tool, "unknown")
-        candidate = Candidate(tool, family, configured_model(tool, family, "medium"), "medium", "diagnostic")
+        choices = configured_models(tool, family, "medium")
+        candidate = Candidate(
+            tool,
+            family,
+            choices[0].model if choices else None,
+            "medium",
+            "diagnostic",
+            choices,
+            choices[0].effort if choices else None,
+        )
         try:
             preflight(candidate, executable, timeout_seconds)
             status = "authenticated" if tool in {"claude", "codex"} else "installed; auth verified on live call"
         except RubberDuckError as exc:
             status = str(exc)
-        probes.append({"tool": tool, "installed": True, "status": status})
+        discovered = discover_models(tool, executable, timeout_seconds)
+        probes.append(
+            {
+                "tool": tool,
+                "installed": True,
+                "status": status,
+                "models": [describe_choice(choice) for choice in choices],
+                "discovery": "unsupported" if not discovered else f"{len(discovered)} models reported",
+            },
+        )
     return probes
+
+
+def describe_choice(choice: ModelChoice) -> dict[str, str | None]:
+    """Render one model choice for diagnostic output."""
+
+    return {"model": choice.model or "CLI default", "effort": choice.effort}
+
+
+def catalog_report() -> dict[str, object]:
+    """Resolve every catalog route for diagnostics, applying discovery where possible."""
+
+    catalog = load_catalog()
+    age = catalog_age_days(catalog)
+    tools: dict[str, object] = {}
+    for tool in TOOLS:
+        executable = shutil.which(tool)
+        families: dict[str, object] = {}
+        for family, tiers in catalog["tools"].get(tool, {}).get("families", {}).items():
+            resolved = {}
+            for tier in tiers:
+                choices = configured_models(tool, family, tier)
+                if executable:
+                    choices = available_models(tool, choices, executable, 15)
+                resolved[tier] = [describe_choice(choice) for choice in choices]
+            families[family] = resolved
+        tools[tool] = {"installed": bool(executable), "families": families}
+    return {
+        "version": skill_version(),
+        "updated": catalog.get("updated"),
+        "age_days": age,
+        "stale": age is not None and age > CATALOG_STALE_DAYS,
+        "tools": tools,
+    }
+
+
+def render_catalog(report: dict[str, object]) -> str:
+    """Render the resolved catalog for humans."""
+
+    lines = [
+        f"🦆📇 Steve's Rubber Duck {report['version']} — "
+        f"catalog updated {report['updated']} ({report['age_days']} days ago)",
+    ]
+    if report["stale"]:
+        lines.append(f"⚠️🦆 Catalog is older than {CATALOG_STALE_DAYS} days; check for newer models.")
+    for tool, detail in report["tools"].items():
+        icon = "✅🦆" if detail["installed"] else "💤🦆"
+        lines.append(f"{icon} {tool}")
+        for family, tiers in detail["families"].items():
+            for tier, choices in tiers.items():
+                rendered = ", ".join(
+                    f"{choice['model']}" + (f" (effort {choice['effort']})" if choice["effort"] else "")
+                    for choice in choices
+                ) or "none configured"
+                lines.append(f"   {family}/{tier}: {rendered}")
+    return "\n".join(lines)
 
 
 def render_success(result: ReviewResult, attempts: list[Attempt], output_format: str) -> str:
@@ -715,7 +1167,12 @@ def render_success(result: ReviewResult, attempts: list[Attempt], output_format:
 
     if output_format == "json":
         return json.dumps(
-            {"status": "ok", **asdict(result), "attempts": [asdict(item) for item in attempts]},
+            {
+                "status": "ok",
+                "version": skill_version(),
+                **asdict(result),
+                "attempts": [asdict(item) for item in attempts],
+            },
             ensure_ascii=False,
             indent=2,
         )
@@ -724,6 +1181,7 @@ def render_success(result: ReviewResult, attempts: list[Attempt], output_format:
     return (
         f"{heading} Steve's Rubber Duck — Your Cardboard Engineer 📦👷🦆\n"
         f"Reviewer: {result.reviewer} | Model: {model} | Tier: {result.tier} | "
+        f"Effort: {result.effort or 'n/a'} | "
         f"Independence: {result.independence}\n\n{result.review}"
     )
 
@@ -762,7 +1220,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=int(os.environ.get("RUBBER_DUCK_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
     )
     parser.add_argument("--format", dest="output_format", choices=("text", "json"), default="text")
+    parser.add_argument("--version", action="version", version=f"steves-rubber-duck {skill_version()} 🦆")
     parser.add_argument("--check", action="store_true", help="Report provider capability without model calls")
+    parser.add_argument(
+        "--list-models",
+        dest="list_models",
+        action="store_true",
+        help="Report the resolved model catalog without model calls",
+    )
     return parser.parse_args(argv)
 
 
@@ -770,14 +1235,36 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
 
     args = parse_args(argv or sys.argv[1:])
+    if args.list_models:
+        report = catalog_report()
+        print(json.dumps(report, indent=2) if args.output_format == "json" else render_catalog(report))
+        return 0
+
     if args.check:
         probes = probe_tools(args.timeout_seconds)
         if args.output_format == "json":
-            print(json.dumps({"status": "ok", "providers": probes}, indent=2))
+            catalog = load_catalog()
+            print(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "version": skill_version(),
+                        "catalog_updated": catalog.get("updated"),
+                        "catalog_age_days": catalog_age_days(catalog),
+                        "providers": probes,
+                    },
+                    indent=2,
+                ),
+            )
         else:
+            catalog = load_catalog()
+            age = catalog_age_days(catalog)
+            if age is not None and age > CATALOG_STALE_DAYS:
+                print(f"⚠️🦆 Model catalog is {age} days old; run --list-models and check for newer models.")
             for probe in probes:
                 icon = "✅🦆" if probe["installed"] else "💤🦆"
-                print(f"{icon} {probe['tool']}: {probe['status']}")
+                models = ", ".join(str(choice["model"]) for choice in probe["models"]) or "CLI default"
+                print(f"{icon} {probe['tool']}: {probe['status']} | models: {models}")
         return 0
 
     if os.environ.get("RUBBER_DUCK_CHILD") == "1":

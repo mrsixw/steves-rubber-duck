@@ -58,6 +58,7 @@ without spending a model call:
 ```bash
 python3 scripts/steves_rubber_duck.py --check
 python3 scripts/steves_rubber_duck.py --check --format json
+python3 scripts/steves_rubber_duck.py --list-models
 ```
 
 To review a plan explicitly:
@@ -89,15 +90,55 @@ JSON field names remain conventional and stable. 🦆🤝🤖
 `--tier auto` uses a capable medium model normally and promotes reviews to a
 high-capability model for security, production infrastructure, destructive
 operations, migrations, concurrency, public interfaces, architectural work,
-or repeated uncertainty.
+or repeated uncertainty. The tier drives both the model choice and the
+reasoning effort requested from it.
 
 Model identifiers can be overridden without editing the skill:
 
 ```text
 RUBBER_DUCK_<TOOL>_<FAMILY>_<TIER>_MODEL
+RUBBER_DUCK_<TOOL>_<FAMILY>_<TIER>_EFFORT
 RUBBER_DUCK_CODEX_MODEL
+RUBBER_DUCK_MODELS_FILE
+RUBBER_DUCK_NO_DISCOVERY
 RUBBER_DUCK_TIMEOUT_SECONDS
 ```
+
+## Model catalog 📇🦆
+
+Models live in [`data/models.json`][catalog], not in the router. Each
+`(tool, family, tier)` holds a preference-ordered list, newest first, with older
+models kept as fallbacks. Bumping a model is a JSON edit and a change to
+`updated`; no code changes.
+
+```bash
+python3 scripts/steves_rubber_duck.py --list-models
+python3 scripts/steves_rubber_duck.py --list-models --format json
+```
+
+Three conventions carry the design:
+
+- `"id": null` means "pass no model flag and use the CLI's own default". Codex
+  self-refreshes this way, as does Claude via its `opus` and `sonnet` aliases,
+  so neither needs a catalog bump to stay current.
+- `"efforts"` lists the reasoning-effort levels a model actually accepts. A tier
+  picks the best level the model supports from `effort_preference`, so `high`
+  becomes `xhigh` on a model that offers it and degrades to `high` on one that
+  does not. Omit `"efforts"` when the levels are unknown: Codex and Copilot then
+  fall back to sending the tier itself, and AGY sends nothing because it encodes
+  effort in the model id, as in `gemini-3.1-pro-high`.
+- `"discovery"` names a subcommand that lists models. Where a CLI has one, the
+  catalog is filtered at runtime to what that CLI reports, cached for 24 hours.
+  A failed or empty probe falls back to the catalog untouched, so a broken probe
+  can never leave a route with nothing to try.
+
+Only AGY currently supports discovery, via `agy models`; Copilot has no
+non-interactive equivalent, so its entries are maintained by hand. When a model
+is rejected as unknown or retired, the router tries the next model on the same
+tool. Any other failure, such as an authentication error, abandons the tool
+immediately rather than repeating a failure a different model cannot fix.
+
+`--check` warns when the catalog has not been touched in 90 days.
 
 ## Safety rails 🛟🦆
 
@@ -146,6 +187,19 @@ bootstrap commands and update every integration with one command:
 git -C "$HOME/.agents/skills/steves-rubber-duck" pull --ff-only
 ```
 
+Check what you are running, and whether it has gone stale:
+
+```bash
+python3 scripts/steves_rubber_duck.py --version
+python3 scripts/steves_rubber_duck.py --check
+```
+
+`--check` warns when the model catalog has not been refreshed in 90 days. That
+matters because a stale catalog routes to models that may have been retired: the
+duck still returns a review by falling back, but quietly and at lower capability.
+Releases are tagged, so [the releases page][releases] shows what changed since
+the version you have. 🏷️🦆
+
 ## Development 🧪🦆
 
 The router uses only the Python standard library.
@@ -153,11 +207,16 @@ The router uses only the Python standard library.
 ```bash
 python3 -m unittest discover -s tests -v
 python3 scripts/steves_rubber_duck.py --check --format json
+python3 scripts/steves_rubber_duck.py --list-models --format json
 ```
 
-The [Tests workflow][tests-workflow] runs the suite, plus a compile check,
-across the supported Python versions on pull requests and pushes to `main`.
-It can also be started manually. 🦆✅
+The [Tests workflow][tests-workflow] runs the suite, plus a compile check and a
+catalog validation, across the supported Python versions on pull requests and
+pushes to `main`. It can also be started manually. 🦆✅
+
+Pushes to `main` additionally tag a release and verify that the published tag
+still runs. See [CONTRIBUTING.md][contributing] for the commit conventions that
+drive the version number.
 
 Licensed under the [MIT License][license].
 
@@ -166,10 +225,13 @@ Licensed under the [MIT License][license].
 ---
 
 [cardboard-engineer]: assets/cardboard-engineer-mascot.png
+[catalog]: data/models.json
+[contributing]: CONTRIBUTING.md
 [code-review-meme]: assets/code-review-meme.png
 [duck-war-room]: assets/duck-war-room.png
 [github-rubber-duck]: https://docs.github.com/en/copilot/concepts/agents/copilot-cli/rubber-duck
 [license]: LICENSE
 [plan-review-meme]: assets/plan-review-meme.png
+[releases]: https://github.com/mrsixw/steves-rubber-duck/releases
 [tests-badge]: https://github.com/mrsixw/steves-rubber-duck/actions/workflows/tests.yml/badge.svg
 [tests-workflow]: https://github.com/mrsixw/steves-rubber-duck/actions/workflows/tests.yml
