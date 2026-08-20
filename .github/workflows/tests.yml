@@ -44,3 +44,76 @@ jobs:
 
       - name: Run the duck tests 🧪🦆
         run: python -m unittest discover -s tests -v
+
+  release:
+    name: Release 🏷️🦆
+    # Skip the bump commit the release itself pushes, or it would recurse.
+    if: "github.ref == 'refs/heads/main' && github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore: bump version')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: test
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository 🪺
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Set up Python 🐍
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install git-mkver 🏗️
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: utils/install_git_mkver.sh
+
+      - name: Fetch tags 🏷️
+        run: git fetch --tags
+
+      - name: Read version 🔢
+        id: version
+        run: echo "version=$(python3 utils/read_version.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version if tag exists ⬆️
+        id: bump
+        run: |
+          version="$(utils/bump_version_if_tag_exists.sh "${{ steps.version.outputs.version }}")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release 🚀🦆
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: utils/create_release.sh "${{ steps.bump.outputs.version }}"
+
+  verify-release:
+    name: Verify release 🔍🦆
+    if: "github.ref == 'refs/heads/main' && github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore: bump version')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: release
+    steps:
+      - name: Set up Python 🐍
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the published tag the way a user would 🧰
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$(gh release view --repo "${{ github.repository }}" --json tagName -q .tagName)"
+          echo "Installing ${tag}"
+          git clone --depth 1 --branch "${tag}"             "https://github.com/${{ github.repository }}.git" "${HOME}/skill"
+
+      - name: Verify the released skill runs 🦆
+        run: |
+          cd "${HOME}/skill"
+          # A release whose router cannot report its own version or enumerate its
+          # catalog is broken for every consumer that clones the tag.
+          test "$(python3 scripts/steves_rubber_duck.py --version)"              = "steves-rubber-duck $(cat VERSION) 🦆"
+          python3 scripts/steves_rubber_duck.py --check --format json > /dev/null
+          python3 scripts/steves_rubber_duck.py --list-models --format json > /dev/null

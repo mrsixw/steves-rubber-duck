@@ -693,6 +693,28 @@ class RouterTests(unittest.TestCase):
         for tool in duck.TOOLS:
             self.assertIn(tool, rendered)
 
+    def test_version_is_read_from_the_version_file(self):
+        expected = duck.VERSION_PATH.read_text(encoding="utf-8").strip()
+        self.assertEqual(duck.skill_version(), expected)
+        self.assertRegex(expected, r"^\d+\.\d+\.\d+$")
+
+    def test_version_survives_a_missing_version_file(self):
+        # A vendored or partial checkout must still route rather than crash.
+        with mock.patch.object(duck, "VERSION_PATH", Path("/nonexistent/VERSION")):
+            self.assertEqual(duck.skill_version(), "unknown")
+
+    def test_version_flag_prints_and_exits(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            with self.assertRaises(SystemExit) as raised:
+                duck.main(["--version"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn(duck.skill_version(), stdout.getvalue())
+
+    def test_version_appears_in_structured_output(self):
+        result = duck.ReviewResult("claude", "anthropic", "opus", "high", "cross-family", "OK", "xhigh")
+        self.assertEqual(json.loads(duck.render_success(result, [], "json"))["version"], duck.skill_version())
+
     def test_stale_catalog_is_reported(self):
         self.assertGreater(duck.catalog_age_days({"updated": "2020-01-01"}), duck.CATALOG_STALE_DAYS)
         self.assertIsNone(duck.catalog_age_days({"updated": "not-a-date"}))

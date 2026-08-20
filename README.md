@@ -187,6 +187,19 @@ bootstrap commands and update every integration with one command:
 git -C "$HOME/.agents/skills/steves-rubber-duck" pull --ff-only
 ```
 
+Check what you are running, and whether it has gone stale:
+
+```bash
+python3 scripts/steves_rubber_duck.py --version
+python3 scripts/steves_rubber_duck.py --check
+```
+
+`--check` warns when the model catalog has not been refreshed in 90 days. That
+matters because a stale catalog routes to models that may have been retired: the
+duck still returns a review by falling back, but quietly and at lower capability.
+Releases are tagged, so [the releases page][releases] shows what changed since
+the version you have. 🏷️🦆
+
 ## Development 🧪🦆
 
 The router uses only the Python standard library.
@@ -197,9 +210,13 @@ python3 scripts/steves_rubber_duck.py --check --format json
 python3 scripts/steves_rubber_duck.py --list-models --format json
 ```
 
-The [Tests workflow][tests-workflow] runs the suite, plus a compile check,
-across the supported Python versions on pull requests and pushes to `main`.
-It can also be started manually. 🦆✅
+The [Tests workflow][tests-workflow] runs the suite, plus a compile check and a
+catalog validation, across the supported Python versions on pull requests and
+pushes to `main`. It can also be started manually. 🦆✅
+
+Pushes to `main` additionally tag a release and verify that the published tag
+still runs. See [CONTRIBUTING.md][contributing] for the commit conventions that
+drive the version number.
 
 Licensed under the [MIT License][license].
 
@@ -209,10 +226,12 @@ Licensed under the [MIT License][license].
 
 [cardboard-engineer]: assets/cardboard-engineer-mascot.png
 [catalog]: data/models.json
+[contributing]: CONTRIBUTING.md
 [code-review-meme]: assets/code-review-meme.png
 [duck-war-room]: assets/duck-war-room.png
 [github-rubber-duck]: https://docs.github.com/en/copilot/concepts/agents/copilot-cli/rubber-duck
 [license]: LICENSE
 [plan-review-meme]: assets/plan-review-meme.png
+[releases]: https://github.com/mrsixw/steves-rubber-duck/releases
 [tests-badge]: https://github.com/mrsixw/steves-rubber-duck/actions/workflows/tests.yml/badge.svg
 [tests-workflow]: https://github.com/mrsixw/steves-rubber-duck/actions/workflows/tests.yml

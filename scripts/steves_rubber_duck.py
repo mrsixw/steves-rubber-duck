@@ -67,7 +67,9 @@ MAX_MODELS_PER_ROUTE = 3
 CATALOG_STALE_DAYS = 90
 DISCOVERY_TTL_SECONDS = 24 * 60 * 60
 SUPPORTED_SCHEMA_VERSION = 1
-CATALOG_PATH = Path(__file__).resolve().parent.parent / "data" / "models.json"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CATALOG_PATH = REPO_ROOT / "data" / "models.json"
+VERSION_PATH = REPO_ROOT / "VERSION"
 MODEL_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]+")
 MODEL_ERROR_RE = re.compile(
     r"unknown model|invalid model|unsupported model|unrecognized model|"
@@ -176,6 +178,20 @@ class ReviewRequest:
     tier: str
     reviewer: str
     timeout_seconds: int
+
+
+def skill_version() -> str:
+    """Return the installed skill version.
+
+    Returns:
+        Version string from the VERSION file, or ``"unknown"`` when the file is
+        absent or unreadable, as it is in a partial or vendored checkout.
+    """
+
+    try:
+        return VERSION_PATH.read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
 
 
 def load_catalog() -> dict:
@@ -1116,6 +1132,7 @@ def catalog_report() -> dict[str, object]:
             families[family] = resolved
         tools[tool] = {"installed": bool(executable), "families": families}
     return {
+        "version": skill_version(),
         "updated": catalog.get("updated"),
         "age_days": age,
         "stale": age is not None and age > CATALOG_STALE_DAYS,
@@ -1126,7 +1143,10 @@ def catalog_report() -> dict[str, object]:
 def render_catalog(report: dict[str, object]) -> str:
     """Render the resolved catalog for humans."""
 
-    lines = [f"🦆📇 Model catalog updated {report['updated']} ({report['age_days']} days ago)"]
+    lines = [
+        f"🦆📇 Steve's Rubber Duck {report['version']} — "
+        f"catalog updated {report['updated']} ({report['age_days']} days ago)",
+    ]
     if report["stale"]:
         lines.append(f"⚠️🦆 Catalog is older than {CATALOG_STALE_DAYS} days; check for newer models.")
     for tool, detail in report["tools"].items():
@@ -1147,7 +1167,12 @@ def render_success(result: ReviewResult, attempts: list[Attempt], output_format:
 
     if output_format == "json":
         return json.dumps(
-            {"status": "ok", **asdict(result), "attempts": [asdict(item) for item in attempts]},
+            {
+                "status": "ok",
+                "version": skill_version(),
+                **asdict(result),
+                "attempts": [asdict(item) for item in attempts],
+            },
             ensure_ascii=False,
             indent=2,
         )
@@ -1195,6 +1220,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=int(os.environ.get("RUBBER_DUCK_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)),
     )
     parser.add_argument("--format", dest="output_format", choices=("text", "json"), default="text")
+    parser.add_argument("--version", action="version", version=f"steves-rubber-duck {skill_version()} 🦆")
     parser.add_argument("--check", action="store_true", help="Report provider capability without model calls")
     parser.add_argument(
         "--list-models",
@@ -1222,6 +1248,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(
                     {
                         "status": "ok",
+                        "version": skill_version(),
                         "catalog_updated": catalog.get("updated"),
                         "catalog_age_days": catalog_age_days(catalog),
                         "providers": probes,
