@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "updated": "2026-08-20",
+  "updated": "2026-09-25",
   "sources": [
     "https://learn.chatgpt.com/docs/models",
     "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json",
     "https://ai.google.dev/gemini-api/docs/models",
     "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
-    "agy models (v1.1.14, verified 2026-08-20)",
+    "agy models (v1.2.11, verified 2026-09-25)",
     "copilot --model probe (CLI 1.0.80, verified 2026-08-20)"
   ],
   "effort_preference": {
@@ -32,6 +32,16 @@
           "high": [
             {
               "id": "opus",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            {
+              "id": "claude-opus-5-5",
               "efforts": [
                 "low",
                 "medium",
@@ -89,6 +99,28 @@
               "id": null
             },
             {
+              "id": "gpt-6-astra",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            {
+              "id": "gpt-6-sol",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            {
               "id": "gpt-5.6-sol",
               "efforts": [
                 "low",
@@ -112,6 +144,27 @@
           "medium": [
             {
               "id": null
+            },
+            {
+              "id": "gpt-6-sol",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
+            },
+            {
+              "id": "gpt-6-luna",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
             },
             {
               "id": "gpt-5.6-terra",
@@ -150,13 +203,22 @@
               "id": "gemini-3.1-pro-high"
             },
             {
+              "id": "gemini-3.8-flash-high"
+            },
+            {
               "id": "gemini-3.7-flash-high"
+            },
+            {
+              "id": "gemini-3.6-flash-high"
             },
             {
               "id": "gemini-3.5-flash-high"
             }
           ],
           "medium": [
+            {
+              "id": "gemini-3.8-flash-medium"
+            },
             {
               "id": "gemini-3.7-flash-medium"
             },
@@ -179,6 +241,9 @@
       "families": {
         "anthropic": {
           "high": [
+            {
+              "id": "claude-opus-5.5"
+            },
             {
               "id": "claude-opus-5"
             },
@@ -204,6 +269,12 @@
         "openai": {
           "high": [
             {
+              "id": "gpt-6-astra"
+            },
+            {
+              "id": "gpt-6-sol"
+            },
+            {
               "id": "gpt-5.6-sol"
             },
             {
@@ -214,6 +285,12 @@
             }
           ],
           "medium": [
+            {
+              "id": "gpt-6-sol"
+            },
+            {
+              "id": "gpt-6-luna"
+            },
             {
               "id": "gpt-5.6-terra"
             },
@@ -234,10 +311,16 @@
               "id": "gemini-3.1-pro-preview"
             },
             {
+              "id": "gemini-3.8-flash"
+            },
+            {
               "id": null
             }
           ],
           "medium": [
+            {
+              "id": "gemini-3.8-flash"
+            },
             {
               "id": "gemini-3.7-flash"
             },

@@ -135,7 +135,8 @@ Three conventions carry the design:
 Only AGY currently supports discovery, via `agy models`; Copilot has no
 non-interactive equivalent, so its entries are maintained by hand. When a model
 is rejected as unknown or retired, the router tries the next model on the same
-tool. Any other failure, such as an authentication error, abandons the tool
+tool, up to six models per route; a route longer than that fails the tests
+rather than silently dropping its tail. Any other failure, such as an authentication error, abandons the tool
 immediately rather than repeating a failure a different model cannot fix.
 
 `--check` warns when the catalog has not been touched in 90 days.
