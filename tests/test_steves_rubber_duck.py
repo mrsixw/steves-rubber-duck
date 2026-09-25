@@ -379,6 +379,19 @@ class RouterTests(unittest.TestCase):
                     choices = duck.configured_models(tool, family, tier)
                     self.assertLessEqual(len(choices), duck.MAX_MODELS_PER_ROUTE)
 
+    def test_catalog_routes_fit_within_the_cap(self):
+        # An entry past the cap is never tried, so it would be a silent dead fallback.
+        catalog = duck.load_catalog()
+        for tool, spec in catalog["tools"].items():
+            for family, tiers in spec["families"].items():
+                for tier, entries in tiers.items():
+                    self.assertLessEqual(len(entries), duck.MAX_MODELS_PER_ROUTE, f"{tool}/{family}/{tier}")
+
+    def test_copilot_unavailable_model_error_triggers_fallback(self):
+        # Verbatim from Copilot CLI 1.0.80 when --model names a model it does not offer.
+        message = 'Error: Model "gemini-3.1-pro-preview" from --model flag is not available.'
+        self.assertIsNotNone(duck.MODEL_ERROR_RE.search(message))
+
     # --- environment overrides ------------------------------------------------
 
     def test_model_override_collapses_route_to_one_choice(self):
