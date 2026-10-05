@@ -31,6 +31,8 @@ Because this:
 
 - `🦆📋` Completed non-trivial plans before presentation or implementation.
 - `🦆🔍` Final scoped code changes after validation.
+- `🦆📣` Text about to be published as the user (PR descriptions, comments,
+  ticket updates), checked for claims that are wrong or out of date.
 - `🚨🦆` Blocking correctness, security, compatibility, or data-loss risks.
 - `⚠️🦆` Concrete non-blocking quality and maintainability issues.
 - `💡🦆` Optional improvements with a practical benefit.

@@ -1,6 +1,6 @@
 ---
 name: steves-rubber-duck
-description: Obtain a read-only second opinion from a separate capable AI model on non-trivial implementation plans and completed code changes. Use automatically before presenting or implementing a substantial plan and before declaring substantial changes complete; use explicitly when asked to rubber-duck, critique, review, or get a second opinion. Skip trivial edits and never invoke from an existing RUBBER_DUCK_CHILD review.
+description: Obtain a read-only second opinion from a separate capable AI model on implementation plans, completed code changes, and text about to be published as the user. Use automatically before presenting or implementing a substantial plan, before declaring a change complete, and before publishing a PR description, comment, or ticket update; use explicitly when asked to rubber-duck, critique, review, or get a second opinion. Never invoke from an existing RUBBER_DUCK_CHILD review.
 ---
 
 # Steve's Rubber Duck 🦆
@@ -20,8 +20,14 @@ invoke this skill or another AI. Return the requested critique directly.
   implementing it. Use the explicit plan text, not hidden reasoning.
 - Review the final scoped diff after validation and before declaring code work
   complete.
-- Skip automatic review for simple factual answers, obvious one-line edits, and
-  cosmetic-only changes. Honor an explicit review request regardless of size.
+- Review text you are about to publish as the user (PR description, PR or
+  issue comment, Jira or Confluence update) before posting it, because a
+  published mistake is hard to retract. Use `--kind code` with the drafted text, the diff
+  or facts it describes, and any existing published text it changes, and ask
+  the duck whether every claim is accurate and current.
+- A change looking small, or the user approving the post, is not a reason to
+  skip review. Skip automatic review only for simple factual answers that change
+  and publish nothing. Honor an explicit review request regardless of size.
 
 Use `--tier auto` by default. It selects a high-capability review for security,
 production infrastructure, destructive operations, migrations, concurrency,
