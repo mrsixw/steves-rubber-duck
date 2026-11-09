@@ -145,8 +145,9 @@ class IsolatedEnvironmentMixin:
         patcher = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache.name})
         patcher.start()
         self.addCleanup(patcher.stop)
-        # A developer's own panel default must not change what these tests run.
-        os.environ.pop("RUBBER_DUCK_REVIEWERS", None)
+        # A developer's own panel defaults must not change what these tests run.
+        for name in ("RUBBER_DUCK_REVIEWERS", "RUBBER_DUCK_PANEL_TOOLS"):
+            os.environ.pop(name, None)
 
 
 class RouterTests(IsolatedEnvironmentMixin, unittest.TestCase):
