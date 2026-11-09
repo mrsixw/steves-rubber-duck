@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-09-25",
+  "updated": "2026-11-09",
   "sources": [
     "https://learn.chatgpt.com/docs/models",
     "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json",
@@ -200,6 +200,9 @@
         "google": {
           "high": [
             {
+              "id": "gemini-4-argon-high"
+            },
+            {
               "id": "gemini-3.1-pro-high"
             },
             {
@@ -216,6 +219,9 @@
             }
           ],
           "medium": [
+            {
+              "id": "gemini-4-argon-medium"
+            },
             {
               "id": "gemini-3.8-flash-medium"
             },

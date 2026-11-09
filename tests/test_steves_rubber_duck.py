@@ -493,6 +493,31 @@ class RouterTests(IsolatedEnvironmentMixin, unittest.TestCase):
         with mock.patch.object(duck, "discover_models", return_value=["something-else"]):
             self.assertEqual(duck.available_models("agy", choices, "/bin/true", 10), choices)
 
+    def test_agy_prefers_gemini_4_argon_from_the_current_model_list(self):
+        # `agy models` as of 2026-11-09: gemini-3.1-pro-high is gone, so the
+        # catalog fell through to Flash, which took ~270s on a high review.
+        current = (
+            "gemini-4-argon-medium",
+            "gemini-4-argon-high",
+            "gemini-4-argon-low",
+            "gemini-3.8-flash-high",
+            "gemini-3.8-flash-medium",
+            "gemini-3.8-flash-low",
+        )
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("RUBBER_DUCK_AGY_")
+        }
+        with mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
+            duck, "discover_models", return_value=list(current)
+        ):
+            for tier in ("high", "medium"):
+                choices = duck.available_models(
+                    "agy", duck.configured_models("agy", "google", tier), "agy", 10
+                )
+                self.assertEqual(choices[0].model, f"gemini-4-argon-{tier}")
+
     def test_discovery_can_be_disabled(self):
         fake = FakeCliDirectory(("agy",))
         try:
