@@ -1628,19 +1628,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     explicit_panel = args.reviewers is not None
-    raw_count = args.reviewers if explicit_panel else os.environ.get("RUBBER_DUCK_REVIEWERS", "1")
+    if explicit_panel:
+        raw_count = args.reviewers
+    elif args.reviewer != "auto":
+        # A forced reviewer is a diagnostic: the environment panel default does not apply.
+        raw_count = "1"
+    else:
+        raw_count = os.environ.get("RUBBER_DUCK_REVIEWERS", "1")
     try:
         reviewers = parse_reviewer_count(raw_count)
     except ValueError:
         source = "--reviewers" if explicit_panel else "RUBBER_DUCK_REVIEWERS"
         print(f"error: {source} must be a positive integer or 'all'", file=sys.stderr)
         return 2
-    if args.reviewer != "auto":
-        if explicit_panel:
-            print("error: --reviewer selects one tool and cannot be combined with --reviewers", file=sys.stderr)
-            return 2
-        # A forced reviewer is a diagnostic; an environment panel default must not block it.
-        reviewers = 1
+    if args.reviewer != "auto" and explicit_panel:
+        print("error: --reviewer selects one tool and cannot be combined with --reviewers", file=sys.stderr)
+        return 2
 
     caller_family = args.caller_family or CALLER_DEFAULT_FAMILY[args.caller]
     request = ReviewRequest(

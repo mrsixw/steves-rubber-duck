@@ -1042,10 +1042,11 @@ class PanelTests(IsolatedEnvironmentMixin, unittest.TestCase):
             self.assertIn("cannot be combined", stderr)
 
     def test_forced_reviewer_overrides_an_environment_panel_default(self):
-        self.with_tools(("codex", "agy"), RUBBER_DUCK_REVIEWERS="2")
-        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewer", "agy", "--format", "json"])
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(stdout)["reviewer"], "agy")
+        for value in ("2", "lots"):
+            self.with_tools(("codex", "agy"), RUBBER_DUCK_REVIEWERS=value)
+            code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewer", "agy", "--format", "json"])
+            self.assertEqual(code, 0, value)
+            self.assertEqual(json.loads(stdout)["reviewer"], "agy")
 
     def test_error_classification(self):
         cases = {
