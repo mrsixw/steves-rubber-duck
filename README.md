@@ -59,6 +59,12 @@ the slots run in parallel. A slot that cannot be filled is reported in the
 caller has a spare family, it takes over a dead slot. If every slot fails, a
 fresh session of the caller runs and is disclosed as a fallback.
 
+`--panel-tools codex,copilot` (or `RUBBER_DUCK_PANEL_TOOLS`) limits which CLIs
+a panel may use. It filters each slot's routes and keeps their order, so a
+family that only an excluded tool can serve drops out and the `Panel:` line
+shows the smaller panel. The fresh-session fallback is not a panel member and
+ignores the list.
+
 Not every subscription covers every model. Plan, quota, and premium-request
 errors step down to the next model on the same tool, and each step-down is
 listed as `↘️🦆`. Throttling (`429`, rate limits) and authentication failures
@@ -119,6 +125,7 @@ RUBBER_DUCK_<TOOL>_<FAMILY>_<TIER>_EFFORT
 RUBBER_DUCK_CODEX_MODEL
 RUBBER_DUCK_MODELS_FILE
 RUBBER_DUCK_REVIEWERS
+RUBBER_DUCK_PANEL_TOOLS
 RUBBER_DUCK_NO_DISCOVERY
 RUBBER_DUCK_TIMEOUT_SECONDS
 ```

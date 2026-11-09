@@ -67,6 +67,11 @@ Useful controls:
   model family other than the caller's (two for a known caller family). The
   default comes from `RUBBER_DUCK_REVIEWERS`, else 1. Pass it only when the user
   asks for more ducks; otherwise leave the user's default alone.
+- `--panel-tools <tool,...>` limits which CLIs a panel may use, for example
+  `codex,copilot`. It filters each family's routes without reordering them, and
+  a family left with no allowed tool is dropped from the panel. The default
+  comes from `RUBBER_DUCK_PANEL_TOOLS`, else every tool. It needs a panel, so
+  pass it only with `--reviewers` above 1.
 - `--reviewer <tool>` forces one reviewer for diagnostics. It overrides a
   `RUBBER_DUCK_REVIEWERS` default but cannot be combined with an explicit
   `--reviewers`, whatever its value.

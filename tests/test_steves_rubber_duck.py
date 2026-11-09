@@ -1048,6 +1048,73 @@ class PanelTests(IsolatedEnvironmentMixin, unittest.TestCase):
             self.assertEqual(code, 0, value)
             self.assertEqual(json.loads(stdout)["reviewer"], "agy")
 
+    def test_panel_tools_restrict_which_clis_review(self):
+        self.with_tools(("codex", "copilot"))
+        log = self.call_log()
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2", "--panel-tools", "codex"])
+        self.assertEqual(code, 0)
+        self.assertIn("🦆🦆 Panel: 1/1 (requested 2; 1 family available) (codex openai)", stdout)
+        self.assertEqual(list(log.glob("copilot-*")), [])
+
+    def test_panel_tools_can_route_every_family_through_copilot(self):
+        self.with_tools(("codex", "agy", "copilot"))
+        _, stdout, _ = run_main(
+            [*ANTHROPIC_CALLER, "--reviewers", "2", "--panel-tools", "copilot", "--format", "json"]
+        )
+        payload = json.loads(stdout)
+        self.assertEqual(
+            [(item["reviewer"], item["family"]) for item in payload["reviews"]],
+            [("copilot", "openai"), ("copilot", "google")],
+        )
+
+    def test_panel_tools_keep_the_default_route_order(self):
+        # The list filters routes and does not reorder them: codex still serves
+        # openai ahead of Copilot even when Copilot is named first.
+        self.with_tools(("codex", "copilot"))
+        _, stdout, _ = run_main(
+            [*ANTHROPIC_CALLER, "--reviewers", "2", "--panel-tools", "copilot,codex", "--format", "json"]
+        )
+        self.assertEqual(json.loads(stdout)["reviews"][0]["reviewer"], "codex")
+
+    def test_fallback_is_not_limited_by_panel_tools(self):
+        # The fallback is a disclosed fresh session, not a panel member, so a
+        # caller tool outside the list may still run when every allowed route fails.
+        self.with_tools(("claude", "codex"), FAKE_FAIL_TOOL="codex")
+        code, stdout, _ = run_main(
+            [*ANTHROPIC_CALLER, "--reviewers", "2", "--panel-tools", "codex", "--format", "json"]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["achieved"], 0)
+        self.assertEqual(payload["fallback"]["reviewer"], "claude")
+
+    def test_environment_sets_the_panel_tools_default(self):
+        self.with_tools(("codex", "agy"), RUBBER_DUCK_REVIEWERS="2", RUBBER_DUCK_PANEL_TOOLS="agy")
+        _, stdout, _ = run_main([*ANTHROPIC_CALLER, "--format", "json"])
+        payload = json.loads(stdout)
+        self.assertEqual([item["reviewer"] for item in payload["reviews"]], ["agy"])
+
+    def test_panel_tools_environment_is_ignored_for_a_single_reviewer(self):
+        self.with_tools(("codex",), RUBBER_DUCK_PANEL_TOOLS="nonsense")
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--format", "json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["reviewer"], "codex")
+
+    def test_invalid_panel_tools_are_usage_errors(self):
+        self.with_tools(("codex",))
+        cases = (
+            (["--reviewers", "2", "--panel-tools", "codex,gpt"], {}, "must list tools"),
+            (["--reviewers", "2", "--panel-tools", ","], {}, "must list tools"),
+            (["--reviewers", "2"], {"RUBBER_DUCK_PANEL_TOOLS": "bard"}, "RUBBER_DUCK_PANEL_TOOLS must list"),
+            (["--panel-tools", "codex"], {}, "needs a panel"),
+            (["--reviewers", "2", "--panel-tools", "claude"], {}, "only serve the caller's own family (anthropic)"),
+        )
+        for argv, environment, message in cases:
+            with mock.patch.dict(os.environ, environment):
+                code, _, stderr = run_main([*ANTHROPIC_CALLER, *argv])
+            self.assertEqual(code, 2, argv)
+            self.assertIn(message, stderr, argv)
+
     def test_error_classification(self):
         cases = {
             "429 Too Many Requests": "throttled",

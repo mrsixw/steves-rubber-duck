@@ -562,7 +562,11 @@ def candidate_routes(request: ReviewRequest, artifact: str) -> list[Candidate]:
     return unique
 
 
-def panel_slots(request: ReviewRequest, artifact: str) -> list[tuple[str, list[Candidate]]]:
+def panel_slots(
+    request: ReviewRequest,
+    artifact: str,
+    allowed_tools: tuple[str, ...] | None = None,
+) -> list[tuple[str, list[Candidate]]]:
     """Build one reviewer slot per complementary model family.
 
     Each slot holds the routes able to serve its family, in failover order: the
@@ -574,10 +578,13 @@ def panel_slots(request: ReviewRequest, artifact: str) -> list[tuple[str, list[C
     Args:
         request: Normalized review request.
         artifact: Review packet used to resolve adaptive tiering.
+        allowed_tools: Optional allow-list of reviewer CLIs. Routes through any
+            other tool are removed, keeping the remaining order.
 
     Returns:
-        ``(family, routes)`` pairs in ``COMPLEMENTARY_FAMILIES`` order. A slot
-        may have no routes when no catalog entry can serve its family.
+        ``(family, routes)`` pairs in ``COMPLEMENTARY_FAMILIES`` order. A family
+        with no usable route is omitted, so the slot count is what the panel can
+        actually attempt.
     """
 
     tier = resolve_tier(request.tier, request.kind, artifact)
@@ -601,7 +608,10 @@ def panel_slots(request: ReviewRequest, artifact: str) -> list[tuple[str, list[C
                     effort=named[0].effort,
                 ),
             )
-        slots.append((family, routes))
+        if allowed_tools is not None:
+            routes = [route for route in routes if route.tool in allowed_tools]
+        if routes:
+            slots.append((family, routes))
     return slots
 
 
@@ -1249,7 +1259,12 @@ def resolve_panel_size(requested: int | str, slot_count: int) -> int:
     return min(int(requested), slot_count)
 
 
-def perform_panel(request: ReviewRequest, artifact: str, requested: int | str) -> PanelResult:
+def perform_panel(
+    request: ReviewRequest,
+    artifact: str,
+    requested: int | str,
+    allowed_tools: tuple[str, ...] | None = None,
+) -> PanelResult:
     """Run several independent reviewers, one per distinct model family.
 
     The first ``target`` slots run in parallel. A slot whose routes all fail is
@@ -1261,18 +1276,18 @@ def perform_panel(request: ReviewRequest, artifact: str, requested: int | str) -
         request: Normalized request.
         artifact: Review packet.
         requested: Requested panel size, an integer or ``"all"``.
+        allowed_tools: Optional allow-list of reviewer CLIs for panel slots. The
+            fresh-session fallback is not a panel member and ignores it.
 
     Returns:
         Panel outcome with every slot that ran, in slot order.
     """
 
-    slots = panel_slots(request, artifact)
+    slots = panel_slots(request, artifact, allowed_tools)
     target = resolve_panel_size(requested, len(slots))
 
     def run_slot(slot: tuple[str, list[Candidate]]) -> SlotOutcome:
         family, routes = slot
-        if not routes:
-            return SlotOutcome(family, None, (Attempt("none", None, f"no route serves {family}", "error"),))
         result, attempts = run_routes(routes, request, artifact)
         if result and result.independence != "cross-family":
             attempts.append(Attempt(result.reviewer, result.model, "family could not be verified", "error"))
@@ -1445,7 +1460,7 @@ def describe_slot_failure(outcome: SlotOutcome) -> str:
         f"{item.reviewer} {item.reason}" if item.reason != "error" else f"{item.reviewer}: {item.error[:80]}"
         for item in outcome.attempts
     ]
-    return f"{outcome.family} slot: " + ("; ".join(clauses) or "no route")
+    return f"{outcome.family} slot: " + "; ".join(clauses)
 
 
 def render_panel(panel: PanelResult, output_format: str) -> str:
@@ -1497,7 +1512,8 @@ def render_panel(panel: PanelResult, output_format: str) -> str:
         )
 
     capped = (
-        f" (requested {panel.requested}; {panel.target} families available)"
+        f" (requested {panel.requested}; {panel.target} "
+        f"{'family' if panel.target == 1 else 'families'} available)"
         if panel.requested != "all" and panel.requested > panel.target
         else ""
     )
@@ -1542,6 +1558,19 @@ def parse_reviewer_count(value: str) -> int | str:
     return count
 
 
+def parse_panel_tools(value: str) -> tuple[str, ...]:
+    """Parse a comma-separated allow-list of reviewer CLIs.
+
+    Raises:
+        ValueError: If the list is empty or names an unknown tool.
+    """
+
+    tools = tuple(dict.fromkeys(part.strip().lower() for part in value.split(",") if part.strip()))
+    if not tools or any(tool not in TOOLS for tool in tools):
+        raise ValueError(value)
+    return tools
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parse command-line arguments."""
 
@@ -1555,6 +1584,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--reviewers",
         default=None,
         help="Panel size: a positive integer or 'all' (default: RUBBER_DUCK_REVIEWERS, else 1)",
+    )
+    parser.add_argument(
+        "--panel-tools",
+        dest="panel_tools",
+        default=None,
+        help=f"Comma-separated reviewer CLIs a panel may use, from {','.join(TOOLS)} "
+        "(default: RUBBER_DUCK_PANEL_TOOLS, else all)",
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -1645,6 +1681,20 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --reviewer selects one tool and cannot be combined with --reviewers", file=sys.stderr)
         return 2
 
+    explicit_tools = args.panel_tools is not None
+    if explicit_tools and reviewers == 1:
+        print("error: --panel-tools needs a panel; pass --reviewers 2 or more", file=sys.stderr)
+        return 2
+    allowed_tools: tuple[str, ...] | None = None
+    raw_tools = args.panel_tools if explicit_tools else os.environ.get("RUBBER_DUCK_PANEL_TOOLS")
+    if reviewers != 1 and raw_tools is not None:
+        try:
+            allowed_tools = parse_panel_tools(raw_tools)
+        except ValueError:
+            source = "--panel-tools" if explicit_tools else "RUBBER_DUCK_PANEL_TOOLS"
+            print(f"error: {source} must list tools from {','.join(TOOLS)}", file=sys.stderr)
+            return 2
+
     caller_family = args.caller_family or CALLER_DEFAULT_FAMILY[args.caller]
     request = ReviewRequest(
         caller=args.caller,
@@ -1655,7 +1705,14 @@ def main(argv: list[str] | None = None) -> int:
         timeout_seconds=args.timeout_seconds,
     )
     if reviewers != 1:
-        panel = perform_panel(request, artifact, reviewers)
+        if allowed_tools is not None and not panel_slots(request, artifact, allowed_tools):
+            print(
+                f"error: panel tools {','.join(allowed_tools)} only serve the caller's own "
+                f"family ({caller_family}), so no independent reviewer is possible",
+                file=sys.stderr,
+            )
+            return 2
+        panel = perform_panel(request, artifact, reviewers, allowed_tools)
         print(render_panel(panel, args.output_format))
         return 0 if panel.reviews or panel.fallback else 4
 
