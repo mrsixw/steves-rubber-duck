@@ -1461,6 +1461,7 @@ def render_panel(panel: PanelResult, output_format: str) -> str:
 
     reviews = panel.reviews
     attempts = panel.attempts
+    gaps = [describe_slot_failure(outcome) for outcome in panel.outcomes if outcome.result is None]
     if not reviews and not panel.fallback:
         if output_format == "json":
             return json.dumps(
@@ -1475,7 +1476,9 @@ def render_panel(panel: PanelResult, output_format: str) -> str:
                 ensure_ascii=False,
                 indent=2,
             )
-        return render_failure(attempts, output_format)
+        summary = [f"🫠🦆 Panel: 0/{panel.target} — no reviewer or fallback succeeded"]
+        summary.extend(f"   - {gap}" for gap in gaps)
+        return "\n".join([*summary, "", render_failure(attempts, output_format)])
 
     if output_format == "json":
         return json.dumps(
@@ -1493,7 +1496,6 @@ def render_panel(panel: PanelResult, output_format: str) -> str:
             indent=2,
         )
 
-    gaps = [describe_slot_failure(outcome) for outcome in panel.outcomes if outcome.result is None]
     capped = (
         f" (requested {panel.requested}; {panel.target} families available)"
         if panel.requested != "all" and panel.requested > panel.target
@@ -1634,7 +1636,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {source} must be a positive integer or 'all'", file=sys.stderr)
         return 2
     if args.reviewer != "auto":
-        if explicit_panel and reviewers != 1:
+        if explicit_panel:
             print("error: --reviewer selects one tool and cannot be combined with --reviewers", file=sys.stderr)
             return 2
         # A forced reviewer is a diagnostic; an environment panel default must not block it.

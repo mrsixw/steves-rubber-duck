@@ -980,6 +980,12 @@ class PanelTests(IsolatedEnvironmentMixin, unittest.TestCase):
         self.assertEqual(code, 4)
         self.assertEqual(json.loads(stdout)["status"], "unavailable")
 
+        code, text, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2"])
+        self.assertEqual(code, 4)
+        self.assertIn("🫠🦆 Panel: 0/2 — no reviewer or fallback succeeded", text)
+        self.assertIn("   - openai slot: codex: codex is not installed", text)
+        self.assertIn("Perform an in-session self-critique", text)
+
     def test_oversized_and_all_requests_are_capped_to_available_families(self):
         self.with_tools(("codex", "agy"))
         for requested, expected in (("5", 5), ("all", "all")):
@@ -1030,9 +1036,10 @@ class PanelTests(IsolatedEnvironmentMixin, unittest.TestCase):
 
     def test_forced_reviewer_conflicts_with_an_explicit_panel(self):
         self.with_tools(("codex",))
-        code, _, stderr = run_main([*ANTHROPIC_CALLER, "--reviewer", "codex", "--reviewers", "2"])
-        self.assertEqual(code, 2)
-        self.assertIn("cannot be combined", stderr)
+        for count in ("1", "2"):
+            code, _, stderr = run_main([*ANTHROPIC_CALLER, "--reviewer", "codex", "--reviewers", count])
+            self.assertEqual(code, 2, count)
+            self.assertIn("cannot be combined", stderr)
 
     def test_forced_reviewer_overrides_an_environment_panel_default(self):
         self.with_tools(("codex", "agy"), RUBBER_DUCK_REVIEWERS="2")

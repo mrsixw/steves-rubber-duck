@@ -68,7 +68,8 @@ Useful controls:
   default comes from `RUBBER_DUCK_REVIEWERS`, else 1. Pass it only when the user
   asks for more ducks; otherwise leave the user's default alone.
 - `--reviewer <tool>` forces one reviewer for diagnostics. It overrides a
-  `RUBBER_DUCK_REVIEWERS` default but cannot be combined with `--reviewers`.
+  `RUBBER_DUCK_REVIEWERS` default but cannot be combined with an explicit
+  `--reviewers`, whatever its value.
 - `--format json` provides structured metadata for automation.
 - `--check --format json` reports installed and authenticated routes without a
   model call.
