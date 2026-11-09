@@ -62,13 +62,33 @@ if tool == "agy" and args == ["models"]:
     for name in FAKE_AGY_MODELS:
         print(f"{name}\tDisplay Name")
     raise SystemExit(0)
+log_dir = os.environ.get("FAKE_CALL_LOG")
+if log_dir:
+    with open(os.path.join(log_dir, f"{tool}-{os.getpid()}"), "w") as handle:
+        handle.write(" ".join(args))
 bad_model = os.environ.get("FAKE_BAD_MODEL")
 if bad_model and bad_model in args:
     print(f"unknown model: {bad_model}", file=sys.stderr)
     raise SystemExit(2)
-if os.environ.get("FAKE_FAIL_TOOL") == tool:
-    print("simulated failure", file=sys.stderr)
+limited_model = os.environ.get("FAKE_PLAN_LIMIT_MODEL")
+if limited_model and any(arg.startswith(limited_model) for arg in args):
+    print("You have exhausted your premium requests for this model", file=sys.stderr)
+    raise SystemExit(1)
+if tool in os.environ.get("FAKE_FAIL_TOOL", "").split(","):
+    print(os.environ.get("FAKE_FAIL_MESSAGE", "simulated failure"), file=sys.stderr)
     raise SystemExit(9)
+barrier_dir = os.environ.get("FAKE_BARRIER_DIR")
+if barrier_dir:
+    # Every reviewer checks in, then waits for the others: this only completes
+    # when the router runs them concurrently.
+    import time
+    open(os.path.join(barrier_dir, tool), "w").close()
+    deadline = time.time() + 5
+    while len(os.listdir(barrier_dir)) < int(os.environ["FAKE_BARRIER_COUNT"]):
+        if time.time() > deadline:
+            print("barrier timeout", file=sys.stderr)
+            raise SystemExit(7)
+        time.sleep(0.05)
 if os.environ.get("FAKE_HANG_TOOL") == tool:
     import time
     time.sleep(60)
@@ -116,7 +136,7 @@ def request(**overrides) -> duck.ReviewRequest:
     return duck.ReviewRequest(**values)
 
 
-class RouterTests(unittest.TestCase):
+class IsolatedEnvironmentMixin:
     def setUp(self):
         # Point discovery at a throwaway cache so tests never read or write the
         # developer's real ~/.cache entry, which would make results order-dependent.
@@ -125,6 +145,11 @@ class RouterTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache.name})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # A developer's own panel default must not change what these tests run.
+        os.environ.pop("RUBBER_DUCK_REVIEWERS", None)
+
+
+class RouterTests(IsolatedEnvironmentMixin, unittest.TestCase):
 
     def test_auto_tier_uses_high_for_security(self):
         self.assertEqual(duck.resolve_tier("auto", "plan", "Change authentication permissions"), "high")
@@ -804,6 +829,234 @@ class RouterTests(unittest.TestCase):
             self.assertEqual(command[command.index("--effort") + 1], "high")
         finally:
             fake.close()
+
+
+
+def run_main(argv: list[str], packet: str = "Review this plan") -> tuple[int, str, str]:
+    """Drive the CLI entry point with a review packet on stdin."""
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with mock.patch.object(sys, "stdin", io.StringIO(packet)):
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = duck.main(argv)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+ANTHROPIC_CALLER = ["--caller", "claude", "--caller-family", "anthropic", "--kind", "plan"]
+
+
+class PanelTests(IsolatedEnvironmentMixin, unittest.TestCase):
+    """Multi-reviewer panels, driven through the CLI with fake reviewer CLIs."""
+
+    def with_tools(self, tools: tuple[str, ...], **environment: str) -> None:
+        """Expose only the given fake reviewers on PATH for this test."""
+
+        fake = FakeCliDirectory(tools)
+        self.addCleanup(fake.close)
+        patcher = mock.patch.dict(os.environ, {"PATH": f"{fake.path}:/usr/bin:/bin", **environment})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def call_log(self) -> Path:
+        """Record every reviewer invocation into a temporary directory."""
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        os.environ["FAKE_CALL_LOG"] = directory.name
+        return Path(directory.name)
+
+    def test_default_stays_single_reviewer(self):
+        self.with_tools(("codex", "agy"))
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--format", "json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["reviewer"], "codex")
+        self.assertNotIn("reviews", payload)
+
+    def test_panel_runs_one_reviewer_per_family(self):
+        self.with_tools(("codex", "agy"))
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2", "--format", "json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(
+            [(item["reviewer"], item["family"]) for item in payload["reviews"]],
+            [("codex", "openai"), ("agy", "google")],
+        )
+        self.assertEqual((payload["target"], payload["achieved"]), (2, 2))
+        self.assertIsNone(payload["fallback"])
+
+    def test_environment_sets_the_panel_default(self):
+        self.with_tools(("codex", "agy"), RUBBER_DUCK_REVIEWERS="2")
+        _, stdout, _ = run_main([*ANTHROPIC_CALLER, "--format", "json"])
+        self.assertEqual(json.loads(stdout)["achieved"], 2)
+
+    def test_reviewers_run_concurrently(self):
+        barrier = tempfile.TemporaryDirectory()
+        self.addCleanup(barrier.cleanup)
+        self.with_tools(("codex", "agy"), FAKE_BARRIER_DIR=barrier.name, FAKE_BARRIER_COUNT="2")
+        _, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2", "--format", "json"])
+        payload = json.loads(stdout)
+        self.assertEqual(payload["achieved"], 2, payload["attempts"])
+
+    def test_missing_direct_tool_is_filled_by_copilot_for_that_family(self):
+        self.with_tools(("codex", "copilot"))
+        log = self.call_log()
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2", "--format", "json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        copilot = payload["reviews"][1]
+        self.assertEqual((copilot["reviewer"], copilot["family"]), ("copilot", "google"))
+        self.assertEqual(copilot["independence"], "cross-family")
+        sent = [path.read_text() for path in log.glob("copilot-*")]
+        self.assertIn(f"--model {copilot['model']}", sent[0])
+
+    def test_plan_limited_model_steps_down_to_the_next_model(self):
+        first, second = (choice.model for choice in duck.configured_models("copilot", "google", "medium")[:2])
+        self.with_tools(("codex", "copilot"), FAKE_PLAN_LIMIT_MODEL=first)
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2", "--format", "json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["reviews"][1]["model"], second)
+        self.assertIn(
+            {"reviewer": "copilot", "model": first, "reason": "plan-limit"},
+            [{key: item[key] for key in ("reviewer", "model", "reason")} for item in payload["attempts"]],
+        )
+
+    def test_step_down_is_reported_in_text_output(self):
+        first = duck.configured_models("copilot", "google", "medium")[0].model
+        self.with_tools(("codex", "copilot"), FAKE_PLAN_LIMIT_MODEL=first)
+        _, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2"])
+        self.assertIn("🦆🦆 Panel: 2/2 (codex openai, copilot google)", stdout)
+        self.assertIn(f"↘️🦆 copilot: {first} plan-limit, stepped down", stdout)
+        self.assertEqual(stdout.count("Reviewer: "), 2)
+
+    def test_exhausted_route_is_not_reported_as_a_step_down(self):
+        # Every named Copilot model is plan-limited: the earlier ones stepped
+        # down, but the last one ended the route and must not claim a step.
+        models = [choice.model for choice in duck.configured_models("copilot", "google", "medium")]
+        named = [model for model in models if model]
+        self.with_tools(("codex", "copilot"), FAKE_PLAN_LIMIT_MODEL="gemini-")
+        _, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2"])
+        self.assertIn("🦆🦆 Panel: 1/2", stdout)
+        for model in named[:-1]:
+            self.assertIn(f"↘️🦆 copilot: {model} plan-limit, stepped down", stdout)
+        self.assertNotIn(f"↘️🦆 copilot: {named[-1]} ", stdout)
+
+    def test_throttled_tool_is_skipped_without_trying_other_models(self):
+        self.with_tools(
+            ("codex", "copilot"),
+            FAKE_FAIL_TOOL="copilot",
+            FAKE_FAIL_MESSAGE="429 Too Many Requests: rate limit exceeded",
+        )
+        log = self.call_log()
+        _, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2", "--format", "json"])
+        payload = json.loads(stdout)
+        self.assertEqual(payload["achieved"], 1)
+        throttled = [item for item in payload["attempts"] if item["reviewer"] == "copilot"]
+        self.assertEqual([item["reason"] for item in throttled], ["throttled"])
+        self.assertEqual(len(list(log.glob("copilot-*"))), 1)
+
+    def test_partial_panel_explains_the_empty_slot(self):
+        self.with_tools(("codex",))
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2"])
+        self.assertEqual(code, 0)
+        self.assertIn("🦆🦆 Panel: 1/2 (codex openai) — google slot: agy: agy is not installed", stdout)
+
+    def test_empty_panel_falls_back_to_a_disclosed_fresh_session(self):
+        self.with_tools(("claude",))
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2", "--format", "json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual((payload["achieved"], payload["reviews"]), (0, []))
+        self.assertEqual(payload["fallback"]["reviewer"], "claude")
+        self.assertEqual(payload["fallback"]["independence"], "fresh-session")
+
+        _, text, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2"])
+        self.assertIn("🦆⚠️ Panel: 0/2 — fell back to fresh-session review", text)
+
+    def test_nothing_available_is_unavailable(self):
+        self.with_tools(())
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", "2", "--format", "json"])
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(stdout)["status"], "unavailable")
+
+    def test_oversized_and_all_requests_are_capped_to_available_families(self):
+        self.with_tools(("codex", "agy"))
+        for requested, expected in (("5", 5), ("all", "all")):
+            _, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewers", requested, "--format", "json"])
+            payload = json.loads(stdout)
+            self.assertEqual((payload["requested"], payload["target"]), (expected, 2))
+
+    def test_unknown_caller_family_gets_three_slots(self):
+        self.with_tools(("claude", "codex", "agy"))
+        _, stdout, _ = run_main(
+            ["--caller", "copilot", "--kind", "plan", "--reviewers", "all", "--format", "json"]
+        )
+        payload = json.loads(stdout)
+        self.assertEqual(
+            sorted(item["family"] for item in payload["reviews"]), ["anthropic", "google", "openai"]
+        )
+
+    def test_failed_slot_is_replaced_by_a_spare_family(self):
+        # An unknown caller has three families; with two requested, a dead slot
+        # must hand over to the third rather than leave the panel short.
+        self.with_tools(("codex", "agy"))
+        _, stdout, _ = run_main(
+            ["--caller", "copilot", "--kind", "plan", "--reviewers", "2", "--format", "json"]
+        )
+        payload = json.loads(stdout)
+        self.assertEqual(
+            [item["family"] for item in payload["reviews"]], ["openai", "google"]
+        )
+
+    def test_broker_default_never_fills_a_panel_slot(self):
+        request_value = request(caller="claude", caller_family="anthropic")
+        for _, routes in duck.panel_slots(request_value, "Review this plan"):
+            for candidate in routes:
+                if candidate.tool == "copilot":
+                    self.assertNotIn(None, [choice.model for choice in candidate.models])
+
+    def test_invalid_reviewer_counts_are_usage_errors(self):
+        self.with_tools(("codex",))
+        for argv, environment in (
+            (["--reviewers", "0"], {}),
+            (["--reviewers", "two"], {}),
+            ([], {"RUBBER_DUCK_REVIEWERS": "lots"}),
+        ):
+            with mock.patch.dict(os.environ, environment):
+                code, _, stderr = run_main([*ANTHROPIC_CALLER, *argv])
+            self.assertEqual(code, 2, argv)
+            self.assertIn("positive integer or 'all'", stderr)
+
+    def test_forced_reviewer_conflicts_with_an_explicit_panel(self):
+        self.with_tools(("codex",))
+        code, _, stderr = run_main([*ANTHROPIC_CALLER, "--reviewer", "codex", "--reviewers", "2"])
+        self.assertEqual(code, 2)
+        self.assertIn("cannot be combined", stderr)
+
+    def test_forced_reviewer_overrides_an_environment_panel_default(self):
+        self.with_tools(("codex", "agy"), RUBBER_DUCK_REVIEWERS="2")
+        code, stdout, _ = run_main([*ANTHROPIC_CALLER, "--reviewer", "agy", "--format", "json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["reviewer"], "agy")
+
+    def test_error_classification(self):
+        cases = {
+            "429 Too Many Requests": "throttled",
+            "rate limit exceeded for your quota": "throttled",
+            "You have exhausted your premium requests": "plan-limit",
+            "Model is not available on your plan": "plan-limit",
+            "insufficient_quota": "plan-limit",
+            "429: You have exhausted your premium requests": "plan-limit",
+            "monthly quota exceeded for this model": "plan-limit",
+            "You exceeded your current quota": "plan-limit",
+            "429: You exceeded your current rate limit": "throttled",
+            "unknown model: foo": "model",
+            "Disk quota exceeded": "error",
+            "authentication required": "error",
+        }
+        for message, expected in cases.items():
+            self.assertEqual(duck.classify_error(message), expected, message)
 
 
 if __name__ == "__main__":
