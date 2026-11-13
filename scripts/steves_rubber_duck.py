@@ -4,6 +4,8 @@
 Usage:
     printf '%s' "$REVIEW_PACKET" | python3 scripts/steves_rubber_duck.py \
         --caller codex --caller-family openai --kind plan --tier auto
+    printf '%s' "$REVIEW_PACKET" | python3 scripts/steves_rubber_duck.py \
+        --caller claude --caller-family anthropic --kind code --reviewers all
     python3 scripts/steves_rubber_duck.py --check --format json
 """
 
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import functools
 import json
 import os
@@ -21,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -74,9 +78,22 @@ MODEL_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]+")
 MODEL_ERROR_RE = re.compile(
     r"unknown model|invalid model|unsupported model|unrecognized model|"
     r"model .{0,40}?not (?:found|available|supported)|no longer available|"
-    r"not available on your plan|is deprecated|has been retired",
+    r"is deprecated|has been retired",
     re.IGNORECASE,
 )
+# Entitlement failures: the account's plan cannot run this model, but a cheaper
+# model on the same tool may still work, so the router steps down.
+PLAN_LIMIT_RE = re.compile(
+    r"premium requests?|usage limit|insufficient_quota|"
+    r"(?:monthly|model|plan|subscription|account) quota|"
+    r"upgrade your (?:plan|subscription)|"
+    r"not (?:included|available) (?:in|on) your (?:plan|subscription)|"
+    r"exceeded your (?:monthly |current )?(?:quota|usage|plan|allowance)|requires a paid",
+    re.IGNORECASE,
+)
+# Transient tool-wide throttling: another model on the same tool is throttled
+# too, so the router skips the tool instead of stepping down.
+THROTTLE_RE = re.compile(r"rate[ -]limit|too many requests|\b429\b", re.IGNORECASE)
 # Fallback catalog used only when data/models.json is missing or unreadable, so a
 # damaged checkout still routes instead of failing outright. Deliberately minimal:
 # it prefers each CLI's own self-refreshing default or alias.
@@ -153,6 +170,8 @@ class Attempt:
     reviewer: str
     model: str | None
     error: str
+    reason: str = "error"
+    stepped_down: bool = False
 
 
 @dataclass(frozen=True)
@@ -335,8 +354,22 @@ def read_discovery_cache(tool: str) -> list[str] | None:
         return None
 
 
+_DISCOVERY_CACHE_LOCK = threading.Lock()
+
+
 def write_discovery_cache(tool: str, models: list[str]) -> None:
-    """Persist discovered models atomically, ignoring any cache write failure."""
+    """Persist discovered models atomically, ignoring any cache write failure.
+
+    The read-modify-write is serialized because panel reviewers discover in
+    parallel, and two unsynchronized writers would drop each other's entries.
+    """
+
+    with _DISCOVERY_CACHE_LOCK:
+        _write_discovery_cache_locked(tool, models)
+
+
+def _write_discovery_cache_locked(tool: str, models: list[str]) -> None:
+    """Merge one tool's discovered models into the cache file."""
 
     path = discovery_cache_path()
     try:
@@ -446,6 +479,32 @@ def resolve_tier(requested: str, kind: str, artifact: str) -> str:
     return "medium"
 
 
+def build_route(tool: str, family: str, tier: str, independence: str) -> Candidate:
+    """Build one candidate with its ordered model fallbacks resolved.
+
+    Args:
+        tool: Reviewer CLI name.
+        family: Model family the route should serve.
+        tier: Resolved capability tier.
+        independence: Independence level claimed for a successful review.
+
+    Returns:
+        Candidate whose ``models`` is never empty.
+    """
+
+    models = configured_models(tool, family, tier)
+    first = models[0] if models else ModelChoice(None, None)
+    return Candidate(
+        tool=tool,
+        family=family,
+        model=first.model,
+        tier=tier,
+        independence=independence,
+        models=models or (first,),
+        effort=first.effort,
+    )
+
+
 def candidate_routes(request: ReviewRequest, artifact: str) -> list[Candidate]:
     """Build ordered, de-duplicated reviewer routes for a request.
 
@@ -462,19 +521,7 @@ def candidate_routes(request: ReviewRequest, artifact: str) -> list[Candidate]:
     complementary = COMPLEMENTARY_FAMILIES[caller_family]
 
     def route(tool: str, family: str, independence: str) -> Candidate:
-        """Build one candidate with its ordered model fallbacks resolved."""
-
-        models = configured_models(tool, family, tier)
-        first = models[0] if models else ModelChoice(None, None)
-        return Candidate(
-            tool=tool,
-            family=family,
-            model=first.model,
-            tier=tier,
-            independence=independence,
-            models=models or (first,),
-            effort=first.effort,
-        )
+        return build_route(tool, family, tier, independence)
 
     if request.reviewer != "auto":
         if request.reviewer == "copilot":
@@ -513,6 +560,59 @@ def candidate_routes(request: ReviewRequest, artifact: str) -> list[Candidate]:
             seen.add(key)
             unique.append(candidate)
     return unique
+
+
+def panel_slots(
+    request: ReviewRequest,
+    artifact: str,
+    allowed_tools: tuple[str, ...] | None = None,
+) -> list[tuple[str, list[Candidate]]]:
+    """Build one reviewer slot per complementary model family.
+
+    Each slot holds the routes able to serve its family, in failover order: the
+    family's direct CLI, then Copilot brokering that family. Copilot's ``null``
+    CLI-default entry is dropped because a broker left to choose its own model
+    cannot prove which family answered, so it could never fill a slot that must
+    be a distinct family.
+
+    Args:
+        request: Normalized review request.
+        artifact: Review packet used to resolve adaptive tiering.
+        allowed_tools: Optional allow-list of reviewer CLIs. Routes through any
+            other tool are removed, keeping the remaining order.
+
+    Returns:
+        ``(family, routes)`` pairs in ``COMPLEMENTARY_FAMILIES`` order. A family
+        with no usable route is omitted, so the slot count is what the panel can
+        actually attempt.
+    """
+
+    tier = resolve_tier(request.tier, request.kind, artifact)
+    slots: list[tuple[str, list[Candidate]]] = []
+    for family in COMPLEMENTARY_FAMILIES[request.caller_family]:
+        routes: list[Candidate] = []
+        tool = DIRECT_TOOL_BY_FAMILY[family]
+        if not (tool == request.caller and family == request.caller_family):
+            routes.append(build_route(tool, family, tier, "cross-family"))
+        broker = build_route("copilot", family, tier, "cross-family")
+        named = tuple(choice for choice in broker.models if choice.model is not None)
+        if named:
+            routes.append(
+                Candidate(
+                    tool=broker.tool,
+                    family=family,
+                    model=named[0].model,
+                    tier=tier,
+                    independence=broker.independence,
+                    models=named,
+                    effort=named[0].effort,
+                ),
+            )
+        if allowed_tools is not None:
+            routes = [route for route in routes if route.tool in allowed_tools]
+        if routes:
+            slots.append((family, routes))
+    return slots
 
 
 def build_review_prompt(kind: str, artifact: str) -> str:
@@ -845,10 +945,10 @@ def execute_candidate(
     """Execute one reviewer route, walking its model fallbacks in order.
 
     The tool is resolved and authenticated once, then each model is tried until
-    one produces a critique. Only a model-specific rejection advances to the
-    next model; an authentication, timeout, or transport failure abandons the
-    tool immediately so the router moves on rather than repeating a failure that
-    a different model cannot fix.
+    one produces a critique. A model rejection or a plan entitlement limit
+    advances to the next model; throttling, authentication, timeout, or
+    transport failure abandons the tool immediately so the router moves on
+    rather than repeating a failure that a different model cannot fix.
 
     Args:
         candidate: Candidate reviewer route.
@@ -886,13 +986,44 @@ def execute_candidate(
                 timeout_seconds=timeout_seconds,
             )
         except RubberDuckError as exc:
+            reason = classify_error(str(exc))
             # The final rejection is raised rather than recorded, so the caller
             # logs it once instead of the route appearing twice in the attempts.
-            if index == len(models) - 1 or not MODEL_ERROR_RE.search(str(exc)):
+            if index == len(models) - 1 or reason not in STEP_DOWN_REASONS:
                 raise
             if attempts is not None:
-                attempts.append(Attempt(candidate.tool, model.model, sanitize_error(str(exc))))
+                attempts.append(
+                    Attempt(candidate.tool, model.model, sanitize_error(str(exc)), reason, stepped_down=True)
+                )
     raise RubberDuckError(f"{candidate.tool} exhausted every configured model")
+
+
+STEP_DOWN_REASONS = ("model", "plan-limit")
+
+
+def classify_error(message: str) -> str:
+    """Classify a reviewer failure to decide whether another model can help.
+
+    Entitlement is checked first, so "429: you have exhausted your premium
+    requests" still steps down to a model the plan covers. Its patterns name
+    the account or model explicitly, which keeps generic throttling such as
+    "rate limit exceeded for your quota" and local errors such as "Disk quota
+    exceeded" out of it.
+
+    Args:
+        message: Failure text from the reviewer.
+
+    Returns:
+        ``throttled``, ``plan-limit``, ``model``, or ``error``.
+    """
+
+    if PLAN_LIMIT_RE.search(message):
+        return "plan-limit"
+    if THROTTLE_RE.search(message):
+        return "throttled"
+    if MODEL_ERROR_RE.search(message):
+        return "model"
+    return "error"
 
 
 def run_candidate_model(
@@ -1037,10 +1168,13 @@ def sanitize_error(value: str) -> str:
     return collapsed[:300] or "no diagnostic output"
 
 
-def perform_review(request: ReviewRequest, artifact: str) -> tuple[ReviewResult | None, list[Attempt]]:
-    """Try reviewer routes until one succeeds.
+def run_routes(
+    routes: list[Candidate], request: ReviewRequest, artifact: str
+) -> tuple[ReviewResult | None, list[Attempt]]:
+    """Try routes in order until one succeeds.
 
     Args:
+        routes: Candidates in failover order.
         request: Normalized request.
         artifact: Review packet.
 
@@ -1049,7 +1183,7 @@ def perform_review(request: ReviewRequest, artifact: str) -> tuple[ReviewResult 
     """
 
     attempts: list[Attempt] = []
-    for candidate in candidate_routes(request, artifact):
+    for candidate in routes:
         try:
             return (
                 execute_candidate(
@@ -1065,8 +1199,122 @@ def perform_review(request: ReviewRequest, artifact: str) -> tuple[ReviewResult 
             # Name the model that actually failed, which is the last one tried,
             # not the first one the route was built with.
             failed = candidate.models[-1].model if candidate.models else candidate.model
-            attempts.append(Attempt(candidate.tool, failed, sanitize_error(str(exc))))
+            message = sanitize_error(str(exc))
+            attempts.append(Attempt(candidate.tool, failed, message, classify_error(message)))
     return None, attempts
+
+
+def perform_review(request: ReviewRequest, artifact: str) -> tuple[ReviewResult | None, list[Attempt]]:
+    """Try reviewer routes until one succeeds.
+
+    Args:
+        request: Normalized request.
+        artifact: Review packet.
+
+    Returns:
+        Successful result, if any, and failed attempt metadata.
+    """
+
+    return run_routes(candidate_routes(request, artifact), request, artifact)
+
+
+@dataclass(frozen=True)
+class SlotOutcome:
+    """Record how one family's panel slot was, or was not, filled."""
+
+    family: str
+    result: ReviewResult | None
+    attempts: tuple[Attempt, ...]
+
+
+@dataclass(frozen=True)
+class PanelResult:
+    """Represent a multi-reviewer panel and any fresh-session fallback."""
+
+    requested: int | str
+    target: int
+    outcomes: tuple[SlotOutcome, ...]
+    fallback: ReviewResult | None
+    fallback_attempts: tuple[Attempt, ...]
+
+    @property
+    def reviews(self) -> list[ReviewResult]:
+        """Return the cross-family reviews that filled a slot, in slot order."""
+
+        return [outcome.result for outcome in self.outcomes if outcome.result]
+
+    @property
+    def attempts(self) -> list[Attempt]:
+        """Return every failed attempt across slots and the fallback."""
+
+        flattened = [item for outcome in self.outcomes for item in outcome.attempts]
+        return flattened + list(self.fallback_attempts)
+
+
+def resolve_panel_size(requested: int | str, slot_count: int) -> int:
+    """Return the effective panel size, capped at the available families."""
+
+    if requested == "all":
+        return slot_count
+    return min(int(requested), slot_count)
+
+
+def perform_panel(
+    request: ReviewRequest,
+    artifact: str,
+    requested: int | str,
+    allowed_tools: tuple[str, ...] | None = None,
+) -> PanelResult:
+    """Run several independent reviewers, one per distinct model family.
+
+    The first ``target`` slots run in parallel. A slot whose routes all fail is
+    replaced by the next unused slot, when one exists, in a second parallel
+    wave. If no slot succeeds, a fresh session of the caller's own tool runs as
+    a disclosed fallback that is never counted as a panel member.
+
+    Args:
+        request: Normalized request.
+        artifact: Review packet.
+        requested: Requested panel size, an integer or ``"all"``.
+        allowed_tools: Optional allow-list of reviewer CLIs for panel slots. The
+            fresh-session fallback is not a panel member and ignores it.
+
+    Returns:
+        Panel outcome with every slot that ran, in slot order.
+    """
+
+    slots = panel_slots(request, artifact, allowed_tools)
+    target = resolve_panel_size(requested, len(slots))
+
+    def run_slot(slot: tuple[str, list[Candidate]]) -> SlotOutcome:
+        family, routes = slot
+        result, attempts = run_routes(routes, request, artifact)
+        if result and result.independence != "cross-family":
+            attempts.append(Attempt(result.reviewer, result.model, "family could not be verified", "error"))
+            result = None
+        return SlotOutcome(family, result, tuple(attempts))
+
+    outcomes: list[SlotOutcome] = []
+    pending = slots[:target]
+    spare = slots[target:]
+    while pending:
+        with ThreadPoolExecutor(max_workers=len(pending)) as pool:
+            wave = list(pool.map(run_slot, pending))
+        outcomes.extend(wave)
+        missing = sum(1 for outcome in wave if outcome.result is None)
+        pending, spare = spare[:missing], spare[missing:]
+
+    fallback: ReviewResult | None = None
+    fallback_attempts: list[Attempt] = []
+    if not any(outcome.result for outcome in outcomes):
+        self_family = request.caller_family
+        if self_family == "unknown":
+            self_family = CALLER_DEFAULT_FAMILY[request.caller]
+        tier = resolve_tier(request.tier, request.kind, artifact)
+        fallback, fallback_attempts = run_routes(
+            [build_route(request.caller, self_family, tier, "fresh-session")], request, artifact
+        )
+    return PanelResult(requested, target, tuple(outcomes), fallback, tuple(fallback_attempts))
 
 
 def probe_tools(timeout_seconds: int) -> list[dict[str, object]]:
@@ -1205,6 +1453,124 @@ def render_failure(attempts: list[Attempt], output_format: str) -> str:
     return "\n".join(lines)
 
 
+def describe_slot_failure(outcome: SlotOutcome) -> str:
+    """Summarize why a panel slot went unfilled, one clause per tool tried."""
+
+    clauses = [
+        f"{item.reviewer} {item.reason}" if item.reason != "error" else f"{item.reviewer}: {item.error[:80]}"
+        for item in outcome.attempts
+    ]
+    return f"{outcome.family} slot: " + "; ".join(clauses)
+
+
+def render_panel(panel: PanelResult, output_format: str) -> str:
+    """Render a panel review for humans or automation.
+
+    Args:
+        panel: Completed panel outcome.
+        output_format: ``text`` or ``json``.
+
+    Returns:
+        Rendered output. Falls back to ``render_failure`` when nothing ran.
+    """
+
+    reviews = panel.reviews
+    attempts = panel.attempts
+    gaps = [describe_slot_failure(outcome) for outcome in panel.outcomes if outcome.result is None]
+    if not reviews and not panel.fallback:
+        if output_format == "json":
+            return json.dumps(
+                {
+                    "status": "unavailable",
+                    "version": skill_version(),
+                    "requested": panel.requested,
+                    "target": panel.target,
+                    "achieved": 0,
+                    "attempts": [asdict(item) for item in attempts],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        summary = [f"🫠🦆 Panel: 0/{panel.target} — no reviewer or fallback succeeded"]
+        summary.extend(f"   - {gap}" for gap in gaps)
+        return "\n".join([*summary, "", render_failure(attempts, output_format)])
+
+    if output_format == "json":
+        return json.dumps(
+            {
+                "status": "ok",
+                "version": skill_version(),
+                "requested": panel.requested,
+                "target": panel.target,
+                "achieved": len(reviews),
+                "reviews": [asdict(result) for result in reviews],
+                "fallback": asdict(panel.fallback) if panel.fallback else None,
+                "attempts": [asdict(item) for item in attempts],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    capped = (
+        f" (requested {panel.requested}; {panel.target} "
+        f"{'family' if panel.target == 1 else 'families'} available)"
+        if panel.requested != "all" and panel.requested > panel.target
+        else ""
+    )
+    lines: list[str] = []
+    if panel.fallback:
+        lines.append(f"🦆⚠️ Panel: 0/{panel.target}{capped} — fell back to fresh-session review")
+        lines.extend(f"   - {gap}" for gap in gaps)
+        lines.append("")
+        lines.append(render_success(panel.fallback, [], "text"))
+    else:
+        members = ", ".join(f"{result.reviewer} {result.family}" for result in reviews)
+        line = f"🦆🦆 Panel: {len(reviews)}/{panel.target}{capped} ({members})"
+        if gaps:
+            line += " — " + " | ".join(gaps)
+        lines.append(line)
+        for result in reviews:
+            lines.append("")
+            lines.append(render_success(result, [], "text"))
+    step_downs = [item for item in attempts if item.stepped_down]
+    if step_downs:
+        lines.append("")
+        lines.extend(
+            f"↘️🦆 {item.reviewer}: {item.model or 'CLI default'} {item.reason}, stepped down"
+            for item in step_downs
+        )
+    return "\n".join(lines)
+
+
+def parse_reviewer_count(value: str) -> int | str:
+    """Parse a panel size of a positive integer or ``all``.
+
+    Raises:
+        ValueError: If the value is neither.
+    """
+
+    text = value.strip().lower()
+    if text == "all":
+        return "all"
+    count = int(text)
+    if count < 1:
+        raise ValueError(value)
+    return count
+
+
+def parse_panel_tools(value: str) -> tuple[str, ...]:
+    """Parse a comma-separated allow-list of reviewer CLIs.
+
+    Raises:
+        ValueError: If the list is empty or names an unknown tool.
+    """
+
+    tools = tuple(dict.fromkeys(part.strip().lower() for part in value.split(",") if part.strip()))
+    if not tools or any(tool not in TOOLS for tool in tools):
+        raise ValueError(value)
+    return tools
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parse command-line arguments."""
 
@@ -1214,6 +1580,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--kind", choices=("plan", "code"))
     parser.add_argument("--tier", choices=("auto", "medium", "high"), default="auto")
     parser.add_argument("--reviewer", choices=("auto", *TOOLS), default="auto")
+    parser.add_argument(
+        "--reviewers",
+        default=None,
+        help="Panel size: a positive integer or 'all' (default: RUBBER_DUCK_REVIEWERS, else 1)",
+    )
+    parser.add_argument(
+        "--panel-tools",
+        dest="panel_tools",
+        default=None,
+        help=f"Comma-separated reviewer CLIs a panel may use, from {','.join(TOOLS)} "
+        "(default: RUBBER_DUCK_PANEL_TOOLS, else all)",
+    )
     parser.add_argument(
         "--timeout-seconds",
         type=int,
@@ -1285,6 +1663,38 @@ def main(argv: list[str] | None = None) -> int:
         print("error: review packet exceeds 500,000 bytes; split it by subsystem", file=sys.stderr)
         return 2
 
+    explicit_panel = args.reviewers is not None
+    if explicit_panel:
+        raw_count = args.reviewers
+    elif args.reviewer != "auto":
+        # A forced reviewer is a diagnostic: the environment panel default does not apply.
+        raw_count = "1"
+    else:
+        raw_count = os.environ.get("RUBBER_DUCK_REVIEWERS", "1")
+    try:
+        reviewers = parse_reviewer_count(raw_count)
+    except ValueError:
+        source = "--reviewers" if explicit_panel else "RUBBER_DUCK_REVIEWERS"
+        print(f"error: {source} must be a positive integer or 'all'", file=sys.stderr)
+        return 2
+    if args.reviewer != "auto" and explicit_panel:
+        print("error: --reviewer selects one tool and cannot be combined with --reviewers", file=sys.stderr)
+        return 2
+
+    explicit_tools = args.panel_tools is not None
+    if explicit_tools and reviewers == 1:
+        print("error: --panel-tools needs a panel; pass --reviewers 2 or more", file=sys.stderr)
+        return 2
+    allowed_tools: tuple[str, ...] | None = None
+    raw_tools = args.panel_tools if explicit_tools else os.environ.get("RUBBER_DUCK_PANEL_TOOLS")
+    if reviewers != 1 and raw_tools is not None:
+        try:
+            allowed_tools = parse_panel_tools(raw_tools)
+        except ValueError:
+            source = "--panel-tools" if explicit_tools else "RUBBER_DUCK_PANEL_TOOLS"
+            print(f"error: {source} must list tools from {','.join(TOOLS)}", file=sys.stderr)
+            return 2
+
     caller_family = args.caller_family or CALLER_DEFAULT_FAMILY[args.caller]
     request = ReviewRequest(
         caller=args.caller,
@@ -1294,6 +1704,18 @@ def main(argv: list[str] | None = None) -> int:
         reviewer=args.reviewer,
         timeout_seconds=args.timeout_seconds,
     )
+    if reviewers != 1:
+        if allowed_tools is not None and not panel_slots(request, artifact, allowed_tools):
+            print(
+                f"error: panel tools {','.join(allowed_tools)} only serve the caller's own "
+                f"family ({caller_family}), so no independent reviewer is possible",
+                file=sys.stderr,
+            )
+            return 2
+        panel = perform_panel(request, artifact, reviewers, allowed_tools)
+        print(render_panel(panel, args.output_format))
+        return 0 if panel.reviews or panel.fallback else 4
+
     result, attempts = perform_review(request, artifact)
     if result:
         print(render_success(result, attempts, args.output_format))

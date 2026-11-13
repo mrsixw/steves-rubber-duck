@@ -63,7 +63,18 @@ active model is known.
 
 Useful controls:
 
-- `--reviewer <tool>` forces one reviewer for diagnostics.
+- `--reviewers <N|all>` asks for a panel of up to N reviewers, one per distinct
+  model family other than the caller's (two for a known caller family). The
+  default comes from `RUBBER_DUCK_REVIEWERS`, else 1. Pass it only when the user
+  asks for more ducks; otherwise leave the user's default alone.
+- `--panel-tools <tool,...>` limits which CLIs a panel may use, for example
+  `codex,copilot`. It filters each family's routes without reordering them, and
+  a family left with no allowed tool is dropped from the panel. The default
+  comes from `RUBBER_DUCK_PANEL_TOOLS`, else every tool. It needs a panel, so
+  pass it only with `--reviewers` above 1.
+- `--reviewer <tool>` forces one reviewer for diagnostics. It overrides a
+  `RUBBER_DUCK_REVIEWERS` default but cannot be combined with an explicit
+  `--reviewers`, whatever its value.
 - `--format json` provides structured metadata for automation.
 - `--check --format json` reports installed and authenticated routes without a
   model call.
@@ -72,6 +83,13 @@ Useful controls:
 
 The router prefers a different model family, then Copilot with an explicitly
 complementary model, then a fresh isolated session of the caller's own tool.
+
+A panel fills each family's slot from that family's CLI, then from Copilot
+brokering a named model of that family. Reviewers run in parallel. A model the
+account's plan cannot run (premium requests, quota, plan-gated models) steps
+down to the next model on the same tool; throttling or an auth failure skips the
+tool. A slot nobody can fill is reported, not padded with a same-family review.
+If every slot fails, a disclosed fresh-session review runs instead.
 
 ## Act on the critique 🔍
 
@@ -85,6 +103,10 @@ complementary model, then a fresh isolated session of the caller's own tool.
   these verbatim from the header line the script emits rather than recalling a
   model name. Never omit this even if the review is brief or the route degraded
   to a self-critique.
+- For a panel, report every duck's header, plus the `Panel:` line whenever fewer
+  ducks reported than were requested or the panel fell back. Verify each duck's
+  findings separately, merge duplicates, and note where the ducks disagree and
+  which view you adopted.
 - Summarize the key findings and resulting decisions; do not dump the full
   critique unless requested.
 
