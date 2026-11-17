@@ -37,7 +37,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Compile the duck router 🦆
-        run: python -m py_compile scripts/steves_rubber_duck.py
+        run: python -m compileall -q scripts
 
       - name: Validate the model catalog 📇🦆
         run: python scripts/steves_rubber_duck.py --list-models --format json
