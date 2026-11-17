@@ -133,7 +133,21 @@ _BUILTIN_CATALOG = {
 
 
 class RubberDuckError(RuntimeError):
-    """Raised when a review request cannot be prepared or executed."""
+    """Raised when a review request cannot be prepared or executed.
+
+    Attributes:
+        model: The model identifier being attempted when the error occurred,
+            or ``None`` when the failure happened before any model was chosen
+            (the tool was missing, unauthenticated, or had no configured
+            model). Carrying this on the exception means the caller reports
+            the model that actually failed instead of guessing from the
+            candidate's model list, which is wrong whenever the route is
+            abandoned before exhausting every model.
+    """
+
+    def __init__(self, message: str, *, model: str | None = None) -> None:
+        super().__init__(message)
+        self.model = model
 
 
 @dataclass(frozen=True)
@@ -884,7 +898,7 @@ def build_agy_command(
         )
         run_help = f"{run_help_result.stdout}\n{run_help_result.stderr}"
         if "--prompt" not in run_help:
-            raise RubberDuckError("AGY run does not advertise --prompt")
+            raise RubberDuckError("AGY run does not advertise --prompt", model=model.model)
         command = [executable, "run"]
         if model.model and "--model" in run_help:
             command.extend(["--model", model.model])
@@ -909,7 +923,7 @@ def build_agy_command(
         command.extend(["--print", review_content])
         return command
 
-    raise RubberDuckError("AGY has no supported non-interactive interface")
+    raise RubberDuckError("AGY has no supported non-interactive interface", model=model.model)
 
 
 def advertises_subcommand(help_text: str, name: str) -> bool:
@@ -985,15 +999,24 @@ def execute_candidate(
                 prompt=prompt,
                 timeout_seconds=timeout_seconds,
             )
-        except RubberDuckError as exc:
-            reason = classify_error(str(exc))
+        except (RubberDuckError, subprocess.SubprocessError, OSError) as exc:
+            # A failure anywhere inside run_candidate_model reaches here,
+            # including file I/O or an AGY help probe that runs before its own
+            # try block, so this is the one place that reliably knows which
+            # model was being attempted. Wrapping a non-RubberDuckError here
+            # keeps that model on the exception all the way to run_routes,
+            # rather than letting it escape unattributed.
+            duck_exc = exc if isinstance(exc, RubberDuckError) else RubberDuckError(
+                f"{candidate.tool} failed to run: {sanitize_error(str(exc))}", model=model.model
+            )
+            reason = classify_error(str(duck_exc))
             # The final rejection is raised rather than recorded, so the caller
             # logs it once instead of the route appearing twice in the attempts.
             if index == len(models) - 1 or reason not in STEP_DOWN_REASONS:
-                raise
+                raise duck_exc from exc
             if attempts is not None:
                 attempts.append(
-                    Attempt(candidate.tool, model.model, sanitize_error(str(exc)), reason, stepped_down=True)
+                    Attempt(candidate.tool, model.model, sanitize_error(str(duck_exc)), reason, stepped_down=True)
                 )
     raise RubberDuckError(f"{candidate.tool} exhausted every configured model")
 
@@ -1173,7 +1196,7 @@ def run_candidate_model(
             review_file.chmod(0o600)
             command = build_agy_command(executable, candidate, model, review_file, timeout_seconds)
         else:
-            raise RubberDuckError(f"Unsupported reviewer: {candidate.tool}")
+            raise RubberDuckError(f"Unsupported reviewer: {candidate.tool}", model=model.model)
 
         try:
             result = run_process(
@@ -1183,14 +1206,22 @@ def run_candidate_model(
                 input_text=input_text,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RubberDuckError(f"{candidate.tool} timed out after {timeout_seconds}s") from exc
+            raise RubberDuckError(f"{candidate.tool} timed out after {timeout_seconds}s", model=model.model) from exc
+        except (subprocess.SubprocessError, OSError) as exc:
+            # Caught here, not left to propagate, so the model being attempted
+            # is still known: an OSError or another SubprocessError escaping
+            # uncaught would reach run_routes with no .model to report, and it
+            # would fall back to guessing the route's last configured model.
+            raise RubberDuckError(
+                f"{candidate.tool} failed to run: {sanitize_error(str(exc))}", model=model.model
+            ) from exc
 
         output = result.stdout.strip()
         if result.returncode != 0:
             detail = sanitize_error(result.stderr or result.stdout)
-            raise RubberDuckError(f"{candidate.tool} exited {result.returncode}: {detail}")
+            raise RubberDuckError(f"{candidate.tool} exited {result.returncode}: {detail}", model=model.model)
         if not output:
-            raise RubberDuckError(f"{candidate.tool} returned an empty critique")
+            raise RubberDuckError(f"{candidate.tool} returned an empty critique", model=model.model)
         family, independence = candidate.family, candidate.independence
         if candidate.tool in BROKER_TOOLS and model.model is None:
             # A broker left to pick its own model may serve any family, so the
@@ -1242,9 +1273,13 @@ def run_routes(
                 attempts,
             )
         except (RubberDuckError, subprocess.SubprocessError, OSError) as exc:
-            # Name the model that actually failed, which is the last one tried,
-            # not the first one the route was built with.
-            failed = candidate.models[-1].model if candidate.models else candidate.model
+            # RubberDuckError carries the model it was actually attempting.
+            # Other exceptions (a transport failure before any model ran)
+            # have none, so fall back to the route's last configured model
+            # rather than claim a specific one that was never tried.
+            failed = getattr(exc, "model", None)
+            if failed is None and not isinstance(exc, RubberDuckError):
+                failed = candidate.models[-1].model if candidate.models else candidate.model
             message = sanitize_error(str(exc))
             attempts.append(Attempt(candidate.tool, failed, message, classify_error(message)))
     return None, attempts

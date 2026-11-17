@@ -668,8 +668,38 @@ class RouterTests(IsolatedEnvironmentMixin, unittest.TestCase):
             fake.close()
 
     def test_attempt_names_the_model_that_actually_failed(self):
-        # The log previously named the route's first model for a failure raised
-        # by the last one, which made a dead route impossible to diagnose.
+        # The log previously named the route's last configured model for any
+        # final failure, which made a dead route impossible to diagnose when
+        # the real failure happened earlier. "first" steps down (a model
+        # rejection), then "last" fails terminally, so the attempt must name
+        # the model that actually ran last, "last", not merely the route's
+        # last configured choice, which here happens to be the same model.
+        fake = FakeCliDirectory(("claude",))
+        try:
+            environment = {
+                "PATH": f"{fake.path}:{os.environ['PATH']}",
+                "FAKE_BAD_MODEL": "first",
+                "FAKE_FAIL_TOOL": "claude",
+            }
+            candidate = duck.Candidate(
+                "claude", "anthropic", "first", "medium", "cross-family",
+                (duck.ModelChoice("first"), duck.ModelChoice("last")),
+            )
+            attempts = []
+            with mock.patch.dict(os.environ, environment):
+                with mock.patch.object(duck, "candidate_routes", return_value=[candidate]):
+                    result, attempts = duck.perform_review(request(), "Review this plan")
+            self.assertIsNone(result)
+            self.assertEqual(attempts[-1].model, "last")
+        finally:
+            fake.close()
+
+    def test_attempt_names_the_model_that_ran_not_the_routes_last_configured_model(self):
+        # A generic failure on the first of two models abandons the tool
+        # immediately (see test_non_model_failure_does_not_try_other_models),
+        # so "last" is never attempted. The logged attempt must still name
+        # "first", the model that actually ran, not "last" just because it is
+        # the route's last configured choice.
         fake = FakeCliDirectory(("claude",))
         try:
             environment = {
@@ -685,9 +715,78 @@ class RouterTests(IsolatedEnvironmentMixin, unittest.TestCase):
                 with mock.patch.object(duck, "candidate_routes", return_value=[candidate]):
                     result, attempts = duck.perform_review(request(), "Review this plan")
             self.assertIsNone(result)
-            self.assertEqual(attempts[-1].model, "last")
+            self.assertEqual(attempts[-1].model, "first")
         finally:
             fake.close()
+
+    def test_attempt_names_the_model_when_run_process_raises_oserror(self):
+        # An OSError or other SubprocessError from run_process (a transport
+        # failure, not a model rejection) must still carry the model being
+        # attempted. The first call here never reaches "last", so attributing
+        # the failure to the route's last configured model would be wrong.
+        def fake_run(command, **kwargs):
+            if command[1:3] == ["auth", "status"]:
+                return duck.subprocess.CompletedProcess(command, 0, '{"loggedIn": true}', "")
+            raise OSError("executable vanished")
+
+        candidate = duck.Candidate(
+            "claude", "anthropic", "first", "medium", "cross-family",
+            (duck.ModelChoice("first"), duck.ModelChoice("last")),
+        )
+        attempts = []
+        with mock.patch.object(duck.shutil, "which", return_value="/usr/bin/claude"):
+            with mock.patch.object(duck, "run_process", side_effect=fake_run):
+                with mock.patch.object(duck, "candidate_routes", return_value=[candidate]):
+                    result, attempts = duck.perform_review(request(), "Review this plan")
+        self.assertIsNone(result)
+        self.assertEqual(attempts[-1].model, "first")
+
+    def test_attempt_names_the_model_when_agy_command_construction_raises(self):
+        # build_agy_command runs AGY help probes and can fail (or file
+        # preparation beside it can) before run_candidate_model's own try
+        # block around the main call. That failure must still be attributed
+        # to the model actually being attempted, not the route's last model.
+        candidate = duck.Candidate(
+            "agy", "google", "first", "medium", "cross-family",
+            (duck.ModelChoice("first"), duck.ModelChoice("last")),
+        )
+        attempts = []
+        with mock.patch.dict(os.environ, {"RUBBER_DUCK_NO_DISCOVERY": "1"}):
+            with mock.patch.object(duck.shutil, "which", return_value="/usr/bin/agy"):
+                with mock.patch.object(
+                    duck, "build_agy_command", side_effect=OSError("agy help probe failed")
+                ):
+                    with mock.patch.object(duck, "candidate_routes", return_value=[candidate]):
+                        result, attempts = duck.perform_review(request(), "Review this plan")
+        self.assertIsNone(result)
+        self.assertEqual(attempts[-1].model, "first")
+
+    def test_oserror_with_a_model_rejection_message_steps_down(self):
+        # An OSError is only wrapped, not special-cased: if its own message
+        # happens to match a model-rejection pattern, it goes through the same
+        # step-down path as a model's own "unknown model" rejection, trying
+        # the next model instead of ending the route immediately.
+        def fake_run(command, **kwargs):
+            if command[1:3] == ["auth", "status"]:
+                return duck.subprocess.CompletedProcess(command, 0, '{"loggedIn": true}', "")
+            if "second" in command:
+                return duck.subprocess.CompletedProcess(
+                    command, 0, "## 🚨🦆 Blocking\nNone\n\n## ✅🦆 Verdict\nQUACKS GOOD", ""
+                )
+            raise OSError("unknown model: first is not available")
+
+        candidate = duck.Candidate(
+            "claude", "anthropic", "first", "medium", "cross-family",
+            (duck.ModelChoice("first"), duck.ModelChoice("second")),
+        )
+        attempts = []
+        with mock.patch.object(duck.shutil, "which", return_value="/usr/bin/claude"):
+            with mock.patch.object(duck, "run_process", side_effect=fake_run):
+                result = duck.execute_candidate(
+                    candidate, kind="plan", artifact="Review this plan", timeout_seconds=10, attempts=attempts
+                )
+        self.assertEqual(result.model, "second")
+        self.assertEqual([(item.model, item.reason) for item in attempts], [("first", "model")])
 
     def test_codex_reports_the_effort_it_actually_sent(self):
         # Codex falls back to the tier when the catalog declares no levels; the
