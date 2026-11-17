@@ -45,6 +45,11 @@ Models live in [`data/models.json`](data/models.json), never in the router.
 To refresh one, edit the JSON and set `updated` to today. Keep the superseded
 model in the list as a fallback rather than deleting it.
 
+Do not add xAI Grok models, even where a CLI such as Copilot offers them. The
+maintainer strongly prefers other families, so the catalogue leaves Grok out
+on purpose. This is a catalogue convention rather than a check the router
+enforces.
+
 Run `--list-models` afterwards to confirm the entries resolve, and remember that
 a model a CLI does not report is filtered out at runtime where discovery is
 supported.
