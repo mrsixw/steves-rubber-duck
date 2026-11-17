@@ -9,13 +9,35 @@ and nothing to build.
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile scripts/steves_rubber_duck.py
+python3 -m compileall -q scripts
 python3 scripts/steves_rubber_duck.py --check --format json
 python3 scripts/steves_rubber_duck.py --list-models --format json
 ```
 
 The [Tests workflow][tests-workflow] runs the suite, a compile check, and a
 catalog validation across the supported Python versions.
+
+## Layout 🗂️
+
+`scripts/steves_rubber_duck.py` is the entry point and stays small. The router
+lives in the `rubber_duck` package next to it, one concern per module:
+
+| Module | Owns |
+| --- | --- |
+| `common` | Shared constants, data classes and `RubberDuckError` |
+| `catalog` | Loading `data/models.json`, model choice per route, effort flags |
+| `discovery` | Runtime model listing for CLIs that support it, with its cache |
+| `process` | Bounded child processes and timeout cleanup |
+| `prompt` | The critic prompt around the untrusted packet |
+| `harnesses/` | One module per reviewer CLI (`claude`, `codex`, `copilot`, `agy`), each with `build_command` and, where the CLI supports one, `preflight` |
+| `routing` | Route order, model step-down, error classification, one review |
+| `panel` | Multi-reviewer panels |
+| `report` | `--check`, `--list-models` and review rendering |
+| `cli` | Arguments and `main` |
+
+A change to how one CLI is invoked belongs in its harness module. Tests patch
+the module that owns a name, such as `rubber_duck.process.run_process`, because
+a patch on the entry script does not reach the callers.
 
 ## Updating models 📇
 
