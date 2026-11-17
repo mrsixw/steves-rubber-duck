@@ -170,7 +170,12 @@ immediately rather than repeating a failure a different model cannot fix.
 ## Safety rails 🛟🦆
 
 - Reviewer sessions run from an isolated temporary directory.
-- Editing and shell tools are disabled where the CLI supports it.
+- Editing and shell tools are disabled where the CLI supports it. Claude runs
+  with `--tools ""` and Copilot with an empty `--available-tools=` set. Codex has
+  no single switch, so every tool feature the installed CLI lists (`shell_tool`,
+  `unified_exec`, browser and computer use, apps, plugins, multi-agent and
+  others) is disabled with `--disable`; a Codex whose `shell_tool` cannot be
+  disabled is skipped rather than run with a shell.
 - The reviewer receives only the packet supplied on standard input.
 - `RUBBER_DUCK_CHILD=1` prevents recursive ducks summoning more ducks forever.
 - The router writes no repository files or review history.

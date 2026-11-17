@@ -999,6 +999,49 @@ def execute_candidate(
 
 
 STEP_DOWN_REASONS = ("model", "plan-limit")
+# Codex has no "no tools" switch, and its read-only sandbox still lets the
+# reviewer run commands that read anywhere on disk. Every tool feature the
+# installed CLI lists is disabled; unknown names are omitted because Codex
+# rejects them, and a CLI whose shell_tool cannot be disabled is skipped.
+CODEX_TOOL_FEATURES = (
+    "shell_tool", "unified_exec", "browser_use", "browser_use_external",
+    "browser_use_full_cdp_access", "computer_use", "apps", "plugins", "remote_plugin",
+    "multi_agent", "image_generation", "in_app_browser", "in_app_local_automation",
+    "skill_search", "skill_mcp_dependency_install", "view_image", "tool_suggest",
+    "workspace_dependencies", "worktrees", "goals", "hooks",
+)
+
+
+def codex_disable_args(executable: str, workdir: Path, timeout_seconds: int) -> list[str]:
+    """Return ``--disable`` flags for every Codex tool feature this CLI knows.
+
+    Args:
+        executable: Resolved Codex path.
+        workdir: Isolated working directory.
+        timeout_seconds: Bound for the feature listing.
+
+    Returns:
+        Arguments disabling each known tool feature.
+
+    Raises:
+        RubberDuckError: If the features cannot be listed or ``shell_tool`` is
+            not among them, so the reviewer's tools cannot be switched off.
+    """
+
+    try:
+        listing = run_process(
+            [executable, "features", "list"], cwd=workdir, timeout_seconds=min(timeout_seconds, 15)
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RubberDuckError(f"codex features could not be listed: {exc}") from exc
+    known = {line.split()[0] for line in listing.stdout.splitlines() if line.strip()}
+    if listing.returncode != 0 or "shell_tool" not in known:
+        raise RubberDuckError("codex tools cannot be disabled on this CLI version")
+    args: list[str] = []
+    for feature in CODEX_TOOL_FEATURES:
+        if feature in known:
+            args.extend(["--disable", feature])
+    return args
 
 
 def classify_error(message: str) -> str:
@@ -1087,6 +1130,7 @@ def run_candidate_model(
                 "-C",
                 str(workdir),
             ]
+            command.extend(codex_disable_args(executable, workdir, timeout_seconds))
             command.extend(effort_args("codex", effort))
             if model.model:
                 command.extend(["-m", model.model])
@@ -1098,10 +1142,11 @@ def run_candidate_model(
             # "auto" selection some plans are limited to, so a tier fallback
             # here fails the whole route.
             effort = model.effort
+            # No --agent: Copilot CLI 1.0.112 fails every prompt run under the
+            # built-in rubber-duck agent with "Selected custom agent system
+            # prompt callback is unavailable". The prompt carries the persona.
             command = [
                 executable,
-                "--agent",
-                "rubber-duck",
                 "-p",
                 prompt,
                 "--silent",
@@ -1112,8 +1157,9 @@ def run_candidate_model(
                 # tools; the empty available set leaves nothing to authorize.
                 "--allow-all-tools",
                 "--no-ask-user",
+                # --no-remote was removed in Copilot CLI 1.0.112, which now
+                # rejects the whole call when it is passed.
                 "--no-auto-update",
-                "--no-remote",
                 "--stream",
                 "off",
                 "--output-format",

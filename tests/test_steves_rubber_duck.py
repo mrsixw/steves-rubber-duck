@@ -47,6 +47,13 @@ if tool == "claude" and args[:3] == ["auth", "status", "--json"]:
 if tool == "codex" and args[:2] == ["login", "status"]:
     print("Logged in")
     raise SystemExit(0)
+if tool == "codex" and args[:2] == ["features", "list"]:
+    features = ["shell_tool", "unified_exec", "computer_use", "browser_use", "apps", "fast_mode"]
+    if os.environ.get("FAKE_CODEX_NO_SHELL_TOOL") == "1":
+        features.remove("shell_tool")
+    for name in features:
+        print(f"{name:<40} stable             true")
+    raise SystemExit(0)
 if tool == "agy" and args == ["--help"]:
     # Mirrors the real agy 1.1.x layout: print mode plus a subcommand listing.
     print("  --model  Model for the current CLI session")
@@ -831,6 +838,82 @@ class RouterTests(IsolatedEnvironmentMixin, unittest.TestCase):
             self.assertNotIn("--effort", recorded["command"])
         finally:
             fake.close()
+
+    def test_copilot_command_omits_flags_that_break_cli_1_0_112(self):
+        # Copilot CLI 1.0.112 fails every call that passes --no-remote ("error:
+        # --no-remote was removed") or --agent rubber-duck ("Selected custom
+        # agent system prompt callback is unavailable"), which silently
+        # disabled the route.
+        fake = FakeCliDirectory(("copilot",))
+        try:
+            recorded = {}
+            real_run = duck.run_process
+
+            def capture(command, **kwargs):
+                recorded.setdefault("command", command)
+                return real_run(command, **kwargs)
+
+            candidate = duck.Candidate(
+                "copilot", "google", "gemini-3.8-flash", "high", "cross-family",
+                (duck.ModelChoice("gemini-3.8-flash", None),),
+            )
+            with mock.patch.dict(os.environ, {"PATH": f"{fake.path}:{os.environ['PATH']}"}):
+                with mock.patch.object(duck, "run_process", side_effect=capture):
+                    duck.execute_candidate(
+                        candidate, kind="code", artifact="Review this diff", timeout_seconds=10
+                    )
+            self.assertNotIn("--no-remote", recorded["command"])
+            # The built-in agent fails non-interactive prompts on 1.0.112.
+            self.assertNotIn("--agent", recorded["command"])
+            self.assertIn("--available-tools=", recorded["command"])
+        finally:
+            fake.close()
+
+    def run_codex_capturing(self, env=None):
+        """Run one Codex review against the fake CLI and return every command."""
+
+        fake = FakeCliDirectory(("codex",))
+        try:
+            commands = []
+            real_run = duck.run_process
+
+            def capture(command, **kwargs):
+                commands.append(command)
+                return real_run(command, **kwargs)
+
+            candidate = duck.Candidate(
+                "codex", "openai", "gpt-6-sol", "high", "cross-family",
+                (duck.ModelChoice("gpt-6-sol", "high"),),
+            )
+            environment = {"PATH": f"{fake.path}:{os.environ['PATH']}", **(env or {})}
+            with mock.patch.dict(os.environ, environment):
+                with mock.patch.object(duck, "run_process", side_effect=capture):
+                    try:
+                        duck.execute_candidate(
+                            candidate, kind="code", artifact="Review this diff", timeout_seconds=10
+                        )
+                    except duck.RubberDuckError as exc:
+                        return commands, exc
+            return commands, None
+        finally:
+            fake.close()
+
+    def test_codex_reviewer_runs_with_every_known_tool_feature_disabled(self):
+        # Codex's read-only sandbox still lets the model run commands that
+        # read anywhere on disk, unlike the claude and copilot routes, which
+        # run with no tools.
+        commands, error = self.run_codex_capturing()
+        self.assertIsNone(error)
+        review = next(command for command in commands if "exec" in command)
+        disabled = {review[i + 1] for i, arg in enumerate(review) if arg == "--disable"}
+        self.assertEqual(disabled, {"shell_tool", "unified_exec", "computer_use", "browser_use", "apps"})
+        self.assertNotIn("plugins", disabled)
+
+    def test_codex_reviewer_is_skipped_when_its_shell_cannot_be_disabled(self):
+        commands, error = self.run_codex_capturing({"FAKE_CODEX_NO_SHELL_TOOL": "1"})
+        self.assertIsNotNone(error)
+        self.assertIn("codex tools cannot be disabled", str(error))
+        self.assertFalse(any("exec" in command for command in commands))
 
     def test_copilot_sends_an_effort_the_catalog_vouches_for(self):
         fake = FakeCliDirectory(("copilot",))
