@@ -412,9 +412,6 @@
               "id": "gemini-4-carbon"
             },
             {
-              "id": "gemini-4-argon"
-            },
-            {
               "id": "gemini-4-neon",
               "efforts": [
                 "low",
@@ -429,6 +426,9 @@
                 "medium",
                 "high"
               ]
+            },
+            {
+              "id": "gemini-4-argon"
             },
             {
               "id": "gemini-3.8-flash",
