@@ -218,6 +218,7 @@ STEP_DOWN_REASONS = ("model", "plan-limit")
 
 MODEL_ERROR_RE = re.compile(
     r"unknown model|invalid model|unsupported model|unrecognized model|"
+    r"model identifier is invalid|"
     r"model .{0,40}?not (?:found|available|supported)|no longer available|"
     r"is deprecated|has been retired",
     re.IGNORECASE,
