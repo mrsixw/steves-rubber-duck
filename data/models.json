@@ -9,8 +9,8 @@
     "agy models (v1.2.11, verified 2026-09-25)",
     "copilot --model probe (CLI 1.0.80, verified 2026-08-20)",
     "copilot --model probe (CLI 1.0.112, verified 2026-11-16: gemini-3.8-flash served; gemini-4-argon GA in Copilot docs but not yet enabled on every plan; gemini-3.1-pro no longer available)",
-    "copilot help config and --model probe (CLI 1.0.114, verified 2026-11-24: claude-sonnet-5.5, gpt-6.2-sol and gpt-6.1-terra served; gemini-4-carbon, gemini-4-argon and gpt-6.2-astra listed but not available on this plan; gemini-4-neon and gemini-4-hydrogen GA in Copilot docs but not in the CLI)",
-    "copilot --effort probe (CLI 1.0.114, verified 2026-11-24: gemini-3.8-flash supports low/medium/high and rejects xhigh; claude-opus-5.5, claude-sonnet-5.5, gpt-6.2-sol, gpt-6.1-terra, gpt-6-astra, gpt-6-sol and gpt-5.6-sol support xhigh; claude-sonnet-5 and gpt-6-luna support medium)",
+    "copilot help config and --model probe (CLI 1.0.114, verified 2026-11-24: claude-sonnet-5.5, gpt-6.2-sol, gpt-6.1-terra, gemini-4-neon and gemini-4-hydrogen served; gemini-4-carbon, gemini-4-argon and gpt-6.2-astra listed but not available on this plan; gemini-4-neon and gemini-4-hydrogen omitted from copilot help config)",
+    "copilot --effort probe (CLI 1.0.114, verified 2026-11-24: gemini-4-neon, gemini-4-hydrogen and gemini-3.8-flash support low/medium/high and reject xhigh; claude-opus-5.5, claude-sonnet-5.5, gpt-6.2-sol, gpt-6.1-terra, gpt-6-astra, gpt-6-sol and gpt-5.6-sol support xhigh; claude-sonnet-5 and gpt-6-luna support medium)",
     "codex models cache and exec probe (CLI 0.162.1, verified 2026-11-24: gpt-6.1-sol and gpt-6.1-terra listed, gpt-6.1-terra served; gpt-6-astra no longer listed)",
     "claude -p --model fable and copilot --model claude-fable-5.2 probes (verified 2026-11-24: neither served on this machine; Claude Code on Amazon Bedrock eu rejects the model identifier, Copilot reports it not available on this plan. Copilot docs note Anthropic retains Fable data by default)"
   ],
@@ -415,6 +415,22 @@
               "id": "gemini-4-argon"
             },
             {
+              "id": "gemini-4-neon",
+              "efforts": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            {
+              "id": "gemini-4-hydrogen",
+              "efforts": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            {
               "id": "gemini-3.8-flash",
               "efforts": [
                 "low",
@@ -427,6 +443,22 @@
             }
           ],
           "medium": [
+            {
+              "id": "gemini-4-neon",
+              "efforts": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            {
+              "id": "gemini-4-hydrogen",
+              "efforts": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
             {
               "id": "gemini-3.8-flash",
               "efforts": [

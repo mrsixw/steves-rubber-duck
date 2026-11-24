@@ -1051,11 +1051,15 @@ class RouterTests(IsolatedEnvironmentMixin, unittest.TestCase):
 
     def test_copilot_catalog_resolves_verified_efforts_and_leaves_unverified_unset(self):
         google_high = {choice.model: choice.effort for choice in duck.configured_models("copilot", "google", "high")}
+        self.assertEqual(google_high["gemini-4-neon"], "high")
+        self.assertEqual(google_high["gemini-4-hydrogen"], "high")
         self.assertEqual(google_high["gemini-3.8-flash"], "high")
         self.assertIsNone(google_high["gemini-4-carbon"])
         self.assertIsNone(google_high[None])
 
         google_medium = {choice.model: choice.effort for choice in duck.configured_models("copilot", "google", "medium")}
+        self.assertEqual(google_medium["gemini-4-neon"], "medium")
+        self.assertEqual(google_medium["gemini-4-hydrogen"], "medium")
         self.assertEqual(google_medium["gemini-3.8-flash"], "medium")
         self.assertIsNone(google_medium[None])
 
