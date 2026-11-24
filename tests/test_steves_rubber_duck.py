@@ -1346,6 +1346,8 @@ class PanelTests(IsolatedEnvironmentMixin, unittest.TestCase):
             "You exceeded your current quota": "plan-limit",
             "429: You exceeded your current rate limit": "throttled",
             "unknown model: foo": "model",
+            # Claude Code on Amazon Bedrock, for a model the region does not serve.
+            "API Error (eu.anthropic.claude-fable-5): 400 The provided model identifier is invalid.": "model",
             "Disk quota exceeded": "error",
             "authentication required": "error",
         }
