@@ -10,6 +10,7 @@
     "copilot --model probe (CLI 1.0.80, verified 2026-08-20)",
     "copilot --model probe (CLI 1.0.112, verified 2026-11-16: gemini-3.8-flash served; gemini-4-argon GA in Copilot docs but not yet enabled on every plan; gemini-3.1-pro no longer available)",
     "copilot help config and --model probe (CLI 1.0.114, verified 2026-11-24: claude-sonnet-5.5, gpt-6.2-sol and gpt-6.1-terra served; gemini-4-carbon, gemini-4-argon and gpt-6.2-astra listed but not available on this plan; gemini-4-neon and gemini-4-hydrogen GA in Copilot docs but not in the CLI)",
+    "copilot --effort probe (CLI 1.0.114, verified 2026-11-24: gemini-3.8-flash supports low/medium/high and rejects xhigh; claude-opus-5.5, claude-sonnet-5.5, gpt-6.2-sol, gpt-6.1-terra, gpt-6-astra, gpt-6-sol and gpt-5.6-sol support xhigh; claude-sonnet-5 and gpt-6-luna support medium)",
     "codex models cache and exec probe (CLI 0.162.1, verified 2026-11-24: gpt-6.1-sol and gpt-6.1-terra listed, gpt-6.1-terra served; gpt-6-astra no longer listed)",
     "claude -p --model fable and copilot --model claude-fable-5.2 probes (verified 2026-11-24: neither served on this machine; Claude Code on Amazon Bedrock eu rejects the model identifier, Copilot reports it not available on this plan. Copilot docs note Anthropic retains Fable data by default)"
   ],
@@ -297,7 +298,10 @@
               "id": "claude-fable-5.2"
             },
             {
-              "id": "claude-opus-5.5"
+              "id": "claude-opus-5.5",
+              "efforts": [
+                "xhigh"
+              ]
             },
             {
               "id": "claude-opus-5"
@@ -311,10 +315,17 @@
           ],
           "medium": [
             {
-              "id": "claude-sonnet-5.5"
+              "id": "claude-sonnet-5.5",
+              "efforts": [
+                "medium",
+                "xhigh"
+              ]
             },
             {
-              "id": "claude-sonnet-5"
+              "id": "claude-sonnet-5",
+              "efforts": [
+                "medium"
+              ]
             },
             {
               "id": "claude-sonnet-4.6"
@@ -330,16 +341,30 @@
               "id": "gpt-6.2-astra"
             },
             {
-              "id": "gpt-6.2-sol"
+              "id": "gpt-6.2-sol",
+              "efforts": [
+                "medium",
+                "xhigh"
+              ]
             },
             {
-              "id": "gpt-6-astra"
+              "id": "gpt-6-astra",
+              "efforts": [
+                "xhigh"
+              ]
             },
             {
-              "id": "gpt-6-sol"
+              "id": "gpt-6-sol",
+              "efforts": [
+                "medium",
+                "xhigh"
+              ]
             },
             {
-              "id": "gpt-5.6-sol"
+              "id": "gpt-5.6-sol",
+              "efforts": [
+                "xhigh"
+              ]
             },
             {
               "id": null
@@ -347,16 +372,31 @@
           ],
           "medium": [
             {
-              "id": "gpt-6.2-sol"
+              "id": "gpt-6.2-sol",
+              "efforts": [
+                "medium",
+                "xhigh"
+              ]
             },
             {
-              "id": "gpt-6.1-terra"
+              "id": "gpt-6.1-terra",
+              "efforts": [
+                "medium",
+                "xhigh"
+              ]
             },
             {
-              "id": "gpt-6-sol"
+              "id": "gpt-6-sol",
+              "efforts": [
+                "medium",
+                "xhigh"
+              ]
             },
             {
-              "id": "gpt-6-luna"
+              "id": "gpt-6-luna",
+              "efforts": [
+                "medium"
+              ]
             },
             {
               "id": "gpt-5.6-terra"
@@ -375,7 +415,12 @@
               "id": "gemini-4-argon"
             },
             {
-              "id": "gemini-3.8-flash"
+              "id": "gemini-3.8-flash",
+              "efforts": [
+                "low",
+                "medium",
+                "high"
+              ]
             },
             {
               "id": null
@@ -383,7 +428,12 @@
           ],
           "medium": [
             {
-              "id": "gemini-3.8-flash"
+              "id": "gemini-3.8-flash",
+              "efforts": [
+                "low",
+                "medium",
+                "high"
+              ]
             },
             {
               "id": "gemini-3.7-flash"

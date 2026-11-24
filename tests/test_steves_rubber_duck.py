@@ -1049,6 +1049,28 @@ class RouterTests(IsolatedEnvironmentMixin, unittest.TestCase):
         finally:
             fake.close()
 
+    def test_copilot_catalog_resolves_verified_efforts_and_leaves_unverified_unset(self):
+        google_high = {choice.model: choice.effort for choice in duck.configured_models("copilot", "google", "high")}
+        self.assertEqual(google_high["gemini-3.8-flash"], "high")
+        self.assertIsNone(google_high["gemini-4-carbon"])
+        self.assertIsNone(google_high[None])
+
+        google_medium = {choice.model: choice.effort for choice in duck.configured_models("copilot", "google", "medium")}
+        self.assertEqual(google_medium["gemini-3.8-flash"], "medium")
+        self.assertIsNone(google_medium[None])
+
+        openai_high = {choice.model: choice.effort for choice in duck.configured_models("copilot", "openai", "high")}
+        self.assertEqual(openai_high["gpt-6-astra"], "xhigh")
+        self.assertIsNone(openai_high["gpt-6.2-astra"])
+        self.assertIsNone(openai_high[None])
+
+        anthropic_high = {
+            choice.model: choice.effort for choice in duck.configured_models("copilot", "anthropic", "high")
+        }
+        self.assertEqual(anthropic_high["claude-opus-5.5"], "xhigh")
+        self.assertIsNone(anthropic_high["claude-fable-5.2"])
+        self.assertIsNone(anthropic_high[None])
+
 
 
 def run_main(argv: list[str], packet: str = "Review this plan") -> tuple[int, str, str]:
