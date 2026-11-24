@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-16",
+  "updated": "2026-11-24",
   "sources": [
     "https://learn.chatgpt.com/docs/models",
     "https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json",
@@ -8,7 +8,10 @@
     "https://docs.github.com/en/copilot/reference/ai-models/supported-models",
     "agy models (v1.2.11, verified 2026-09-25)",
     "copilot --model probe (CLI 1.0.80, verified 2026-08-20)",
-    "copilot --model probe (CLI 1.0.112, verified 2026-11-16: gemini-3.8-flash served; gemini-4-argon GA in Copilot docs but not yet enabled on every plan; gemini-3.1-pro no longer available)"
+    "copilot --model probe (CLI 1.0.112, verified 2026-11-16: gemini-3.8-flash served; gemini-4-argon GA in Copilot docs but not yet enabled on every plan; gemini-3.1-pro no longer available)",
+    "copilot help config and --model probe (CLI 1.0.114, verified 2026-11-24: claude-sonnet-5.5, gpt-6.2-sol and gpt-6.1-terra served; gemini-4-carbon, gemini-4-argon and gpt-6.2-astra listed but not available on this plan; gemini-4-neon and gemini-4-hydrogen GA in Copilot docs but not in the CLI)",
+    "codex models cache and exec probe (CLI 0.162.1, verified 2026-11-24: gpt-6.1-sol and gpt-6.1-terra listed, gpt-6.1-terra served; gpt-6-astra no longer listed)",
+    "claude -p --model fable and copilot --model claude-fable-5.2 probes (verified 2026-11-24: neither served on this machine; Claude Code on Amazon Bedrock eu rejects the model identifier, Copilot reports it not available on this plan. Copilot docs note Anthropic retains Fable data by default)"
   ],
   "effort_preference": {
     "medium": [
@@ -31,6 +34,16 @@
       "families": {
         "anthropic": {
           "high": [
+            {
+              "id": "fable",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
             {
               "id": "opus",
               "efforts": [
@@ -74,6 +87,16 @@
               ]
             },
             {
+              "id": "claude-sonnet-5-5",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            {
               "id": "claude-sonnet-5",
               "efforts": [
                 "low",
@@ -98,6 +121,17 @@
           "high": [
             {
               "id": null
+            },
+            {
+              "id": "gpt-6.1-sol",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
             },
             {
               "id": "gpt-6-astra",
@@ -145,6 +179,17 @@
           "medium": [
             {
               "id": null
+            },
+            {
+              "id": "gpt-6.1-terra",
+              "efforts": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ]
             },
             {
               "id": "gpt-6-sol",
@@ -201,10 +246,10 @@
         "google": {
           "high": [
             {
-              "id": "gemini-4-argon-high"
+              "id": "gemini-4-carbon-high"
             },
             {
-              "id": "gemini-3.1-pro-high"
+              "id": "gemini-4-argon-high"
             },
             {
               "id": "gemini-3.8-flash-high"
@@ -249,6 +294,9 @@
         "anthropic": {
           "high": [
             {
+              "id": "claude-fable-5.2"
+            },
+            {
               "id": "claude-opus-5.5"
             },
             {
@@ -263,6 +311,9 @@
           ],
           "medium": [
             {
+              "id": "claude-sonnet-5.5"
+            },
+            {
               "id": "claude-sonnet-5"
             },
             {
@@ -276,6 +327,12 @@
         "openai": {
           "high": [
             {
+              "id": "gpt-6.2-astra"
+            },
+            {
+              "id": "gpt-6.2-sol"
+            },
+            {
               "id": "gpt-6-astra"
             },
             {
@@ -285,13 +342,16 @@
               "id": "gpt-5.6-sol"
             },
             {
-              "id": "gpt-5.5"
-            },
-            {
               "id": null
             }
           ],
           "medium": [
+            {
+              "id": "gpt-6.2-sol"
+            },
+            {
+              "id": "gpt-6.1-terra"
+            },
             {
               "id": "gpt-6-sol"
             },
@@ -302,15 +362,15 @@
               "id": "gpt-5.6-terra"
             },
             {
-              "id": "gpt-5.6-luna"
-            },
-            {
               "id": null
             }
           ]
         },
         "google": {
           "high": [
+            {
+              "id": "gemini-4-carbon"
+            },
             {
               "id": "gemini-4-argon"
             },
