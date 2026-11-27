@@ -22,9 +22,11 @@ invoke this skill or another AI. Return the requested critique directly.
   complete.
 - Review text you are about to publish as the user (PR description, PR or
   issue comment, Jira or Confluence update) before posting it, because a
-  published mistake is hard to retract. Use `--kind code` with the drafted text, the diff
-  or facts it describes, and any existing published text it changes, and ask
-  the duck whether every claim is accurate and current.
+  published mistake is hard to retract. Use `--kind code` with the drafted text,
+  the code, configuration and command output its claims rest on (as described
+  under [Prepare the review packet](#prepare-the-review-packet-)), and any
+  existing published text it changes, and ask the duck whether every claim is
+  accurate and current.
 - A change looking small, or the user approving the post, is not a reason to
   skip review. Skip automatic review only for simple factual answers that change
   and publish nothing. Honor an explicit review request regardless of size.
@@ -35,15 +37,49 @@ public interfaces, architectural changes, or repeated uncertainty.
 
 ## Prepare the review packet 📦
 
-Include only:
+Include:
 
 1. The user's goal and acceptance criteria.
 2. Relevant constraints and repository conventions.
-3. The proposed plan, or the scoped diff plus validation results.
-4. Specific uncertainties the reviewer should challenge.
+3. The proposed plan, or the change itself: the scoped diff, plus the current
+   text of what a reviewer needs to judge it, even where this round did not
+   edit it:
+   - the files the change touches;
+   - the docs, comments, changelog and tests that describe the changed
+     behaviour;
+   - the unchanged code and configuration that behaviour depends on;
+   - how the tools involved behave, shown by their version, the exact command
+     or configuration, and their documentation or observed output rather than
+     your summary of it. Mark it unverified when you cannot show it.
+
+   A reviewer cannot check a claim against code it never sees. Where you
+   cannot include something, say what is missing.
+4. The validation that ran: each command and its raw result, such as test
+   counts, exit codes and coverage figures.
+5. Open questions for the reviewer, and the specific uncertainties to
+   challenge.
+
+Keep the packet neutral, so that the duck reviews the artefact rather than your
+reading of it:
+
+- Give evidence, not verdicts. Do not label your own conclusions as verified
+  or correct; show the command and its output instead.
+- Ask what is wrong as well as the narrow questions you have already thought
+  of. Name specific risks in addition to an open question, never instead of
+  one.
+- For a later round on the same work, send the whole current state, not only
+  what changed since the last review.
+
+Where whole files would make the packet too large, use line-numbered excerpts
+that cover both the claims and the code behind them, and say what you left
+out. The router refuses a packet over 500,000 bytes. Past that, split the
+review by subsystem, or by question where a claim and the code that enforces
+it sit in different subsystems, and repeat in each part the evidence the parts
+share. When decisive evidence still has to be left out, list the question it
+affects as unresolved.
 
 Do not include credentials, unrelated user changes, hidden chain-of-thought, or
-unnecessary repository content.
+repository content that is not needed to judge the change.
 
 ## Run the router 🦆🔀
 
